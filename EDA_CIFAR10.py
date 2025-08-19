@@ -6,8 +6,13 @@ from torchvision.transforms import v2 as transforms
 import random
 import wandb
 import numpy as np
+import yaml
 
-from Custom_VIT import ViTWithAggPositionalEncoding, ViTWithDecompPositionalEncoding, ViTWithStaticPositionalEncoding
+from Custom_VIT import (
+    ViTWithAggPositionalEncoding,
+    ViTWithDecompSequenceGrading,
+    ViTWithStaticPositionalEncoding,
+    ViTWithAggPositionalEncoding_PF )
 
 
 
@@ -66,7 +71,7 @@ def init_wandb(team_name, project_name, run_name, secret_key, additional_config 
 
         config = additional_config,
 
-        settings = wandb.Settings(code_dir = '.')
+        settings = wandb.Settings(code_dir = './')
     )
 
     return run
@@ -137,26 +142,22 @@ def get_val_splits(train_dataset, tr_size, val_size, tr_bs, val_bs):
     return(train_loader, val_loader)
 
 
-def validate_model(model):
-    pass
-
-
-#TODO : Finish validating model and 
-def train_model(model, train_loader, optimizer, scheduler, CELoss, device):
+def train_model(model, train_loader, optimizer, scheduler, CELoss, device, validate_model = False):
     
-    batch_losses = [ ]; batch_acc = []
+    batch_losses = [ ]
     model = model.to(device)
 
     model.train()
 
-    # total_tr_rows = len(train_loader)
-    # tr_rows = int(0.7 * total_tr_rows)
-    
-    # train_loader, val_loader = get_val_splits(train_dataset = train_loader.dataset,
-    #                tr_size = tr_rows,
-    #                val_size = total_tr_rows - tr_rows,
-    #                tr_bs = 64,
-    #                val_bs = 32)
+    if validate_model:
+        total_tr_rows = len(train_loader)
+        tr_rows = int(0.7 * total_tr_rows)
+        
+        train_loader, val_loader = get_val_splits(train_dataset = train_loader.dataset,
+                    tr_size = tr_rows,
+                    val_size = total_tr_rows - tr_rows,
+                    tr_bs = 64,
+                    val_bs = 32)
 
     for index, (image_batch, label_batch) in enumerate( iter(train_loader) ):
 
@@ -167,13 +168,10 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device):
 
         # Forward pass through the model
         outputs = model(image_batch)
-
-        _, predicted = torch.max(outputs, 1)
-        accuracy = (predicted == label_batch).float().mean().item()
         loss = CELoss(outputs, label_batch)
 
         batch_losses.append(loss.item())
-        batch_acc.append(accuracy)
+        
         
         loss.backward()
         optimizer.step()
@@ -184,12 +182,27 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device):
             break
 
     all_batch_losses = sum(batch_losses)/len(batch_losses)
-    all_batch_acc = sum(batch_acc)/len(batch_acc)
-    
-    
     scheduler.step()
 
-    return (all_batch_losses, all_batch_acc)
+    if validate_model:
+
+        model.eval()
+
+        # TODO : Average validation accuracy and early stop when validation loss or accuracy doesn't improve.
+        with torch.no_grad(): 
+            total_loss = 0
+            for batch_data, batch_labels in val_loader:
+                outputs = model(batch_data)
+                loss = CELoss(outputs, batch_labels)
+                total_loss += loss.item()
+
+                _, predicted = torch.max(outputs, 1)
+                accuracy = (predicted == label_batch).float().mean().item()
+            
+            avg_val_loss = total_loss / len(val_loader)
+
+
+    return (all_batch_losses, None)
 
 
 def setup_training(num_epochs, model, run_logger, device):
@@ -242,7 +255,7 @@ def get_model(model_name, model_config):
 
     if model_name == 'decomp':
         
-        model = ViTWithDecompPositionalEncoding(
+        model = ViTWithDecompSequenceGrading(
             pretrained_model_name="google/vit-base-patch16-224",
             decomp_algo=model_config['algo'],  # or qr or svd
             decomp_strategy=model_config['strategy'],  # project or importance
@@ -259,6 +272,15 @@ def get_model(model_name, model_config):
             num_out_classes=model_config['num_out']
         )
     
+    if model_name == 'aggregate_pf':
+        model = ViTWithAggPositionalEncoding_PF(
+            distance_metric=model_config['distance'], # cosine, euclidean
+            aggregate_method=model_config['agg'], # max_elem
+            alpha= model_config['alpha'],
+            num_out_classes=model_config['num_out'],
+            use_both=model_config['use_both']
+        )
+
     if model_name == 'static':
         
         model = ViTWithStaticPositionalEncoding(
@@ -267,47 +289,37 @@ def get_model(model_name, model_config):
     
     return model
 
+def get_project_details(yaml_config_file, exp_name):
+
+    with open(yaml_config_file, 'r') as file:
+        loaded_config = yaml.safe_load(file)
+    
+    # loaded_config - 'yaml_project_name' , config, model_name, team_name, project_name, run_name, secret_key
+    if exp_name in loaded_config:
+        return loaded_config[exp_name]
+    else:
+        raise Exception("Provided experiment doesn't exist")
+
 
 if __name__ == "__main__":
 
-    system_seed = 108
-    num_epochs = 5
-    set_system_seed(system_seed)
+    yaml_project_name = "aggregate_pos_enc_pf_notboth"
 
-    config_decomp = {
-        'algo': 'eig',  # or qr or svd
-        'strategy': 'importance',  # project or importance
-        'num_out': 10,
-        'alpha' : 0.7,
-        'system_seed':system_seed,
-        'num_epochs': num_epochs
-                    }
+    config_details = get_project_details("./configs.yaml", yaml_project_name)
+    set_system_seed(config_details['config']['system_seed'])
     
-    config_agg = {'distance': 'cosine', # cosine, euclidean
-     'agg': 'max_elem', # max_elem
-      'alpha': 0.7,
-    'num_out': 10,
-     'system_seed': system_seed,
-     'num_epochs': num_epochs
-      }
-    
-    config_static = {'num_out': 10,
-                     'system_seed': system_seed,
-                     'num_epochs': num_epochs
-                     }
-
-    
-    
-    model = get_model(model_name = 'decomp', model_config = config_decomp)
+    model = get_model(model_name = config_details['model_name'],
+                      model_config = config_details['config']
+                      )
     device = get_device()
 
-    run_logger = init_wandb(team_name='amith-adiraju-self',
-                project_name='hybrid_posenc_test_v2',
-                run_name = 'decomp_pos_enc',
-                secret_key='f07b2137ee2ba424d6b068954595c97b1f669138',
-                additional_config = config_decomp
+    run_logger = init_wandb(team_name=config_details['team_name'],
+                project_name=config_details['project_name'],
+                run_name = config_details['run_name'] + '_' + str(config_details['config']['system_seed'] ),
+                secret_key=config_details['secret_key'],
+                additional_config = config_details['config']
                 )
     
-    run_logger.log_code("Project Code")
+    run_logger.log_code("./")
 
-    setup_training(num_epochs, model, run_logger, device)
+    setup_training(config_details['config']['num_epochs'], model, run_logger, device)
