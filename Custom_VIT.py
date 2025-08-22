@@ -28,7 +28,7 @@ class AggregateSequenceGrading(nn.Module):
         Returns:
             Positional encodings as distances from max vector (batch_size, seq_len, 1)
         """
-        batch_size, seq_len, feature_dim = x.shape
+        batch_size = x.shape[0]
 
         # Find the maximum vector in each sequence
         if self.aggregate_method == 'norm':
@@ -37,9 +37,20 @@ class AggregateSequenceGrading(nn.Module):
             vector_values = torch.sum(x, dim=2)  # (batch_size, seq_len)
         elif self.aggregate_method == 'max_elem':
             vector_values, _ = torch.max(x, dim=2)  # (batch_size, seq_len)
-        else:
-            raise ValueError(f"Unsupported max method: {self.aggregate_method}")
+        elif self.aggregate_method == 'entropy':
+            
+            # Find max feature among `feature_dim` in each sequence for each image
+            max_feat_seq = x.max(axis = 2, keepdim = True).values # (batch_size, seq_len, 1)
+            min_feat_seq = x.min(axis = 2, keepdim = True).values # (batch_size, seq_len, 1)
 
+            # normalizing patch embeddings to be between [0-1], for entropy calculation
+            normed_patches = torch.subtract(x, max_feat_seq)
+            normed_patches /= (torch.subtract(max_feat_seq, min_feat_seq) + 1e-8) # (batch_size, seqlen, ftr_dim)
+
+            probs = normed_patches / (normed_patches.sum(axis = 2, keepdim = True) + 1e-8) # (batch_size, seqlen, ftr_dim)
+            vector_values = - torch.sum(probs * torch.log(probs + 1e-8), axis = 2) # (batch_size, seq_len)
+
+        # TODO: create a argument to class called 'seq_select_method', whose values are either max or min
         # Get indices of maximum vectors in each batch
         max_indices = torch.argmax(vector_values, dim=1)  # (batch_size)
 

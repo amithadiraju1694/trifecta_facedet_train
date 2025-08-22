@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets
 from torchvision.transforms import v2 as transforms
+from tqdm import tqdm
 
 import random
 import wandb
@@ -142,24 +143,55 @@ def get_val_splits(train_dataset, tr_size, val_size, tr_bs, val_bs):
     return(train_loader, val_loader)
 
 
-def train_model(model, train_loader, optimizer, scheduler, CELoss, device, validate_model = False):
+def validate_model(model, val_loader, CELoss):
+    
+    model.eval()
+    with torch.no_grad():
+
+        total_loss = 0; total_acc = 0
+        num_batches = len(val_loader)
+        
+        for index, (batch_data, batch_labels) in tqdm( enumerate( iter(val_loader) ), total = num_batches, desc = "processing val batches"):
+
+            if index > 2:
+                print("Breaking from validation batches")
+                break
+
+            outputs = model(batch_data)
+            loss = CELoss(outputs, batch_labels)
+            total_loss += loss.item()
+
+            _, predicted = torch.max(outputs, 1)
+            accuracy = (predicted == batch_labels).float().mean().item()
+            total_acc += accuracy
+        
+        avg_val_loss = total_loss / num_batches
+        avg_val_acc = total_acc / num_batches
+
+
+    return (avg_val_loss, avg_val_acc)
+
+
+def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_model = False):
     
     batch_losses = [ ]
     model = model.to(device)
 
     model.train()
 
-    if validate_model:
-        total_tr_rows = len(train_loader)
+    if val_model:
+
+        total_tr_rows = len(train_loader.dataset)
         tr_rows = int(0.7 * total_tr_rows)
+        val_rows = int(total_tr_rows - tr_rows)
         
         train_loader, val_loader = get_val_splits(train_dataset = train_loader.dataset,
                     tr_size = tr_rows,
-                    val_size = total_tr_rows - tr_rows,
+                    val_size = val_rows,
                     tr_bs = 64,
                     val_bs = 32)
 
-    for index, (image_batch, label_batch) in enumerate( iter(train_loader) ):
+    for index, (image_batch, label_batch) in tqdm( enumerate( iter(train_loader) ) , total = len(train_loader), desc = "Processing train batches"):
 
         image_batch = image_batch.to(device)
         label_batch = label_batch.to(device)
@@ -181,28 +213,14 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, valid
             print("Breaking from batches")
             break
 
-    all_batch_losses = sum(batch_losses)/len(batch_losses)
+    train_losses = sum(batch_losses)/len(batch_losses)
     scheduler.step()
 
-    if validate_model:
+    if val_model:
+        val_loss, val_acc = validate_model(model, val_loader, CELoss)
+        return (train_losses, val_loss, val_acc)
 
-        model.eval()
-
-        # TODO : Average validation accuracy and early stop when validation loss or accuracy doesn't improve.
-        with torch.no_grad(): 
-            total_loss = 0
-            for batch_data, batch_labels in val_loader:
-                outputs = model(batch_data)
-                loss = CELoss(outputs, batch_labels)
-                total_loss += loss.item()
-
-                _, predicted = torch.max(outputs, 1)
-                accuracy = (predicted == label_batch).float().mean().item()
-            
-            avg_val_loss = total_loss / len(val_loader)
-
-
-    return (all_batch_losses, None)
+    else: return train_losses
 
 
 def setup_training(num_epochs, model, run_logger, device):
@@ -213,7 +231,8 @@ def setup_training(num_epochs, model, run_logger, device):
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
     # 2. Learning Rate Scheduler: Cosine Annealing with Warm Restarts
-    # T_0 is the number of epochs for the first restart cycle; T_mult is a factor for increasing the cycle length after each restart
+    # T_0 is the number of epochs for the first restart cycle
+    # T_mult is a factor for increasing the cycle length after each restart
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,
                                                                      T_0=10,
                                                                      T_mult=1,
@@ -221,26 +240,40 @@ def setup_training(num_epochs, model, run_logger, device):
 
     CELoss = torch.nn.CrossEntropyLoss()
 
-    losses = []; accs = []
-    for ep in range(num_epochs):
+    train_losses = []; best_val_loss = float('inf'); patience = 3; epochs_no_improve = 0
+    val_losses = []; val_accs = []
+    for ep in tqdm( range(num_epochs) , desc = "Running Training epochs: "):
 
-        loss, accuracy = train_model(model, train_loader,optimizer, scheduler, CELoss, device)
+        train_loss, val_loss, val_acc = train_model(model,
+                                                    train_loader,
+                                                    optimizer,
+                                                    scheduler,
+                                                    CELoss,
+                                                    device,
+                                                    True
+                                                    )
+       
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        val_accs.append(val_acc)
         
-        if ep % 20 == 0:
-            print(f"Loss of : {loss} , accuracy of : {accuracy} in epoch: {ep}")
-
-        losses.append(loss)
-        accs.append(accuracy)
-
-        run_logger.log(
-            {"train_loss": loss,
-             "train_accuracy": accuracy
-             }
-        )
-
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve +=1
+        
+        if epochs_no_improve >= patience:
+            print("Ending training as validation loss doesn't improve.")
+            break
+    
+        run_logger.log({
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "val_accuracy": val_acc
+        })
     
     test_loss, test_acc = test_model(model, test_loader, CELoss, device)
-
     run_logger.log({
                     "test_accuracy": test_acc,
                     "test_loss" : test_loss
@@ -303,7 +336,7 @@ def get_project_details(yaml_config_file, exp_name):
 
 if __name__ == "__main__":
 
-    yaml_project_name = "aggregate_pos_enc_pf_notboth"
+    yaml_project_name = "decomp_importance_pos_enc"
 
     config_details = get_project_details("./configs.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
