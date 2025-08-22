@@ -8,7 +8,11 @@ class AggregateSequenceGrading(nn.Module):
     Custom positional encoding based on distances from the maximum vector in a sequence.
     """
 
-    def __init__(self, distance_metric='euclidean', aggregate_method='norm'):
+    def __init__(self,
+                 distance_metric='euclidean',
+                 aggregate_method='norm',
+                 seq_select_method = 'weighted_avg'
+                 ):
         """
         Initialize the custom positional encoding module.
 
