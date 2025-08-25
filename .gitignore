@@ -2,3 +2,4 @@ data/*
 wandb/*
 configs.yaml
 findings.txt
+test.ipynb

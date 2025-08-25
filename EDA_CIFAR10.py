@@ -13,7 +13,11 @@ from Custom_VIT import (
     ViTWithAggPositionalEncoding,
     ViTWithDecompSequenceGrading,
     ViTWithStaticPositionalEncoding,
-    ViTWithAggPositionalEncoding_PF )
+    ViTWithAggPositionalEncoding_PF,
+    ViTWithAggPositionalEncoding_SP,
+    ViTWithAggPositionalEncoding_RandNoise
+     
+      )
 
 
 
@@ -292,12 +296,14 @@ def get_model(model_name, model_config):
             pretrained_model_name="google/vit-base-patch16-224",
             decomp_algo=model_config['algo'],  # or qr or svd
             decomp_strategy=model_config['strategy'],  # project or importance
+            top_k_seqfeat = model_config["top_k_seqfeat"],
             num_out_classes=model_config['num_out'],
             alpha = model_config['alpha']
-                                                )
+                                            )
 
     if model_name == 'aggregate':
 
+        #TODO: Change this later, AggregateSequenceGrading Changed
         model = ViTWithAggPositionalEncoding(
             distance_metric=model_config['distance'], # cosine, euclidean
             aggregate_method=model_config['agg'], # max_elem
@@ -307,12 +313,37 @@ def get_model(model_name, model_config):
     
     if model_name == 'aggregate_pf':
         model = ViTWithAggPositionalEncoding_PF(
-            distance_metric=model_config['distance'], # cosine, euclidean
-            aggregate_method=model_config['agg'], # max_elem
-            alpha= model_config['alpha'],
-            num_out_classes=model_config['num_out'],
+            distance_metric=model_config['distance_metric'],
+            aggregate_method=model_config['aggregate_method'],
+            seq_select_method = model_config['seq_select_method'],
+            num_out_classes = model_config['num_out'],
+            add_coordinates = model_config['add_coordinates'],
+            K = model_config['K'],
+            aggregate_dim = model_config['aggregate_dim'],
+            norm_type = model_config['norm_type'],
+            return_anchors = model_config['return_anchors'],
             use_both=model_config['use_both']
         )
+
+    if model_name == 'aggregate_pos_enc_FiLMInj':
+        model = ViTWithAggPositionalEncoding_SP(
+            distance_metric=model_config['distance_metric'],
+            aggregate_method=model_config['aggregate_method'],
+            seq_select_method = model_config['seq_select_method'],
+            num_out_classes = model_config['num_out'],
+            add_coordinates = model_config['add_coordinates'],
+            K = model_config['K'],
+            aggregate_dim = model_config['aggregate_dim'],
+            norm_type = model_config['norm_type'],
+            return_anchors = model_config['return_anchors']
+                                        )
+    
+    if model_name == 'aggregate_pos_enc_FiLMInj_random':
+
+        model = ViTWithAggPositionalEncoding_RandNoise(
+            num_out_classes=model_config['num_out']
+        )
+
 
     if model_name == 'static':
         
@@ -336,7 +367,7 @@ def get_project_details(yaml_config_file, exp_name):
 
 if __name__ == "__main__":
 
-    yaml_project_name = "decomp_importance_pos_enc"
+    yaml_project_name = "decomp_saliency_pos_enc"
 
     config_details = get_project_details("./configs.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
