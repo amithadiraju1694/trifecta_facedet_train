@@ -367,7 +367,7 @@ def get_project_details(yaml_config_file, exp_name):
 
 if __name__ == "__main__":
 
-    yaml_project_name = "decomp_saliency_pos_enc"
+    yaml_project_name = "aggregate_pos_enc_LOO_FiLMInj"
 
     config_details = get_project_details("./configs.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])

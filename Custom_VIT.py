@@ -30,7 +30,7 @@ class AggregateSequenceGrading(nn.Module):
             distance_metric: Method to compute distances ('euclidean', 'cosine', 'manhattan')
             aggregate_method: Method to determine the "maximum" vector ('norm', 'sum', 'max_elem', 'entropy', 'softmax')
             seq_select_method: Method to select sequences, whether one of all sequences ( argmin or argmax ) or weighted sequences by importance
-            (soft_weighted_sum, LOO_weighted_sum) etc.
+            (soft_weighted_sum, loo_weighsum_loop) etc.
             aggregate_dim: Which dimension to aggregate vectors by.
             norm_type: Whether to perform L1 or L2 norm, only used when aggregate_method == 'norm'
             return_anchors: Whether to get back weighted anchors (improtance * sequences ) as output.
@@ -525,10 +525,8 @@ class ViTWithAggPositionalEncoding_SP(nn.Module):
                                             add_coords=self.add_coordinates,
                                             weights_sequences = weights
                                                         )
-        assert torch.isnan(phi_offset).any(), "Phi offset contains at least one NaN. Please check `compute_single_patch_phi`"
         
         custom_pos_encodings = self.projection_phi(phi_offset) # (bs, seqlen, ftrdim*2)
-        assert torch.isnan(custom_pos_encodings).any(), "Custom position encoding, after projection contains at least one NaN. Please check custom projection layers."
 
         s = custom_pos_encodings[:, :, :self.vit.config.hidden_size] # (bs, seqlen, ftrdim)
         b = custom_pos_encodings[:, :, self.vit.config.hidden_size: ] # (bs, seqlen, ftrdim)

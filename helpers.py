@@ -35,10 +35,15 @@ def get_vector_agg(aggregate_method, x, req_dim, norm_type = None):
         vector_values, _ = torch.max(x, dim=req_dim)  # (batch_size, seq_len)
 
     elif aggregate_method == 'entropy':
+        #TODO: Ensure that it's scaled like pre-softmax norms
         vector_values = entropy_vec(x=x, req_dim=req_dim) # (batch_size, seq_len)
     
     elif aggregate_method == 'norm_softmax':
         agg_vector_values = torch.norm(x, p=norm_type, dim=req_dim)  # (batch_size, seq_len)
+        
+        # This is to ensure values don't blow up
+        agg_vector_values = ( agg_vector_values - agg_vector_values.max(dim = -1, keepdim = True).values )  / (agg_vector_values.std(dim = -1, keepdim = True) + 1e-6) # (batch_size, seq_len)
+        
         with torch.no_grad():
             vector_values = torch.nn.functional.softmax(agg_vector_values, dim = -1) # (batch_size, seq_len)
     
@@ -62,11 +67,11 @@ def get_anchor_vectors(seq_select_method, vector_values, x, batch_indices):
     elif seq_select_method == 'weighted_sum':
         anchor_vectors = soft_weighted_sum(weights = vector_values, original_vectors = x, sum_dim = 1) # (batch_size, 1, ftrdim)
     
-    elif seq_select_method == 'LOO_weighted_sum':
+    elif seq_select_method == 'loo_weighsum':
 
         # Here at each seqlen index, a weighted sum is computed, leaving that seqlen outside weighted sum
         # so that it doesnt dilute distances when compute with original patch embeddings
-        anchor_vectors = LOO_weighted_sum(weights = vector_values, original_vectors = x, sum_dim = 1) # (batch_size, seqlen, ftrdim)
+        anchor_vectors = loo_weighsum_vector(weights = vector_values, original_vectors = x) # (batch_size, seqlen, ftrdim)
     
     else:
         raise ValueError(f"Unsupported sequence selection method: {seq_select_method}.")
@@ -90,23 +95,25 @@ def compute_single_patch_phi(anchor_values, x, K, add_coords = False, weights_se
 
 
     # (bs, seqlen, ftrdim)
-    offset = torch.abs( x - anchor_values )
+    # This is safe and best offset for FiLM style injection
+    delta = 1e-3
+    offset = torch.sqrt((x.float()-anchor_values.float()).pow(2) + delta**2) - delta
 
     # Normalizing distances
-    d = torch.sqrt( 
-                    torch.sum( offset, dim = -1 ) + 1e-8
-                   ) # (bs, seqlen)
+    offset_sum = torch.sum( offset, dim = -1 ) + 1e-8
+    
+    d = torch.sqrt(offset_sum ) # (bs, seqlen)
+    dlog = torch.log(1+d+1e-8)
     
     # Further Normalizing distances for stability
     std = torch.std(d, dim = -1, keepdim = True) + 1e-8
     meand = torch.mean(d, dim = -1, keepdim = True)
-    
     dhat = torch.subtract(d, meand) / std # (bs, seqlen)
     
     #TODO: Add Cosine Similarity of (each sequence vector of x, with anchor_values) as additional dimensions in phi
-    phi = [d, dhat**2,torch.log(1+d)]
+    phi = [d, dhat**2,dlog]
 
-
+    
     if add_coords:
 
         if weights_sequences == None: raise ValueError("Weight values must be provided if co-ordinates are to be added to phi vectors")
@@ -154,6 +161,9 @@ def compute_single_patch_phi(anchor_values, x, K, add_coords = False, weights_se
         phi += feats_to_add
     
     phi = torch.stack(phi, dim = - 1)
+
+    assert torch.isfinite(phi).all()
+    assert not torch.isnan(phi).all()
     
     return phi
 
@@ -173,13 +183,22 @@ def soft_weighted_sum(weights, original_vectors, sum_dim = 1):
     if len(weights.shape) == 2:
         weights = weights.unsqueeze(-1) # (bs, seqlen, 1)
     
-    weighted_values = weights * original_vectors # (bs, seqlen, ftrdim)
+    weights = weights.float()
+    original_vectors = original_vectors.float()
+
+    assert torch.isfinite(weights).all()
+    assert torch.isfinite(original_vectors).all()
+
+    assert not torch.isnan(weights).all()
+    assert not torch.isnan(original_vectors).all()
     
+    weighted_values = weights * original_vectors # (bs, seqlen, ftrdim)
     soft_anchor = torch.sum(weighted_values, dim = sum_dim, keepdim = True) # (bs, 1, ftrdim)
 
     return soft_anchor
 
-def LOO_weighted_sum(weights, original_vectors, sum_dim = 1):
+
+def loo_weighsum_loop(weights, original_vectors, sum_dim = 1):
     """
     weights: (batch_size, seq_len)
     original_vectors: (batch_size, seq_len, feature_dim)
@@ -222,3 +241,29 @@ def LOO_weighted_sum(weights, original_vectors, sum_dim = 1):
     loo_soft_anchors = torch.cat(list_soft_anchors, dim = sum_dim) # (bs, seqlen, ftrdim)
 
     return loo_soft_anchors
+
+
+def loo_weighsum_vector(weights, original_vectors, eps=1e-8):
+    """
+    weights: (B, T)         # ideally softmax-normalized over T
+    vectors: (B, T, D)      # patch tokens (exclude CLS before calling)
+    returns: (B, T, D)      # LOO anchors per token
+    """
+    weights = weights.float()
+    original_vectors = original_vectors.float()
+
+    # totals over all tokens
+    sum_w   = weights.sum(dim=1, keepdim=True)                      # (B,1)
+    ws_all  = torch.bmm(weights.unsqueeze(1), original_vectors).squeeze(1)   # (B,D)
+
+    # leave-one-out numerator: subtract each token's own contribution
+    contrib = weights.unsqueeze(-1) * original_vectors                       # (B,T,D)
+    numer   = ws_all.unsqueeze(1) - contrib                         # (B,T, D)
+
+    # leave-one-out denominator: sum_w - weight_j  (clamped)
+    denom   = torch.clamp(sum_w - weights, min=eps).unsqueeze(-1)   # (B,T,1)
+
+    loo = numer / denom                                             # (B,T,D)
+    # Optional strict check (debug)
+    assert torch.isfinite(loo).all()
+    return loo
