@@ -10,7 +10,6 @@ import numpy as np
 import yaml
 
 from Custom_VIT import (
-    ViTWithAggPositionalEncoding,
     ViTWithDecompSequenceGrading,
     ViTWithStaticPositionalEncoding,
     ViTWithAggPositionalEncoding_PF,
@@ -106,12 +105,10 @@ def test_model(model, test_loader, CELoss, device):
     bloss = []; bacc = []
 
     for index, (image_batch, label_batch) in enumerate( iter(test_loader) ):
+        if index > 2: break
 
         image_batch = image_batch.to(device)
         label_batch = label_batch.to(device)
-
-        if index > 2:
-            break
 
         with torch.no_grad():
 
@@ -157,10 +154,7 @@ def validate_model(model, val_loader, CELoss):
         
         for index, (batch_data, batch_labels) in tqdm( enumerate( iter(val_loader) ), total = num_batches, desc = "processing val batches"):
 
-            if index > 2:
-                print("Breaking from validation batches")
-                break
-
+            if index > 2: break
             outputs = model(batch_data)
             loss = CELoss(outputs, batch_labels)
             total_loss += loss.item()
@@ -176,26 +170,16 @@ def validate_model(model, val_loader, CELoss):
     return (avg_val_loss, avg_val_acc)
 
 
-def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_model = False):
+def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_model = False, val_loader = None):
     
     batch_losses = [ ]
     model = model.to(device)
 
     model.train()
 
-    if val_model:
-
-        total_tr_rows = len(train_loader.dataset)
-        tr_rows = int(0.7 * total_tr_rows)
-        val_rows = int(total_tr_rows - tr_rows)
-        
-        train_loader, val_loader = get_val_splits(train_dataset = train_loader.dataset,
-                    tr_size = tr_rows,
-                    val_size = val_rows,
-                    tr_bs = 64,
-                    val_bs = 32)
-
     for index, (image_batch, label_batch) in tqdm( enumerate( iter(train_loader) ) , total = len(train_loader), desc = "Processing train batches"):
+        
+        if index > 2: break
 
         image_batch = image_batch.to(device)
         label_batch = label_batch.to(device)
@@ -208,14 +192,10 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
 
         batch_losses.append(loss.item())
         
-        
         loss.backward()
         optimizer.step()
 
-        # Remove this, just for testing
-        if index > 2:
-            print("Breaking from batches")
-            break
+        
 
     train_losses = sum(batch_losses)/len(batch_losses)
     scheduler.step()
@@ -227,65 +207,73 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
     else: return train_losses
 
 
-def setup_training(num_epochs, model, run_logger, device):
-
+def setup_training(num_epochs, model, run_logger, device,
+                   patience=7, min_delta_loss=1e-8, min_epochs=20, smooth_k=3):
+    
     train_loader, test_loader = get_cifar10_loaders(batch_size=64, num_workers=2)
 
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, eta_min=1e-6)
 
-    # 2. Learning Rate Scheduler: Cosine Annealing with Warm Restarts
-    # T_0 is the number of epochs for the first restart cycle
-    # T_mult is a factor for increasing the cycle length after each restart
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,
-                                                                     T_0=10,
-                                                                     T_mult=1,
-                                                                     eta_min=1e-6)
+    val_accs, val_losses, best_val_loss_sm = [],[], float('inf')
+    epochs_no_improve, ckpt_path = 0, 'best_by_valloss.pth'
+    val_model = True; val_loader = None
 
-    CELoss = torch.nn.CrossEntropyLoss()
+    if val_model:
+        total_tr_rows = len(train_loader.dataset)
+        tr_rows = int(0.7 * total_tr_rows)
+        val_rows = int(total_tr_rows - tr_rows)
+        
+        train_loader, val_loader = get_val_splits(train_dataset = train_loader.dataset,
+                    tr_size = tr_rows,
+                    val_size = val_rows,
+                    tr_bs = 64,
+                    val_bs = 32)
 
-    train_losses = []; best_val_loss = float('inf'); patience = 3; epochs_no_improve = 0
-    val_losses = []; val_accs = []
-    for ep in tqdm( range(num_epochs) , desc = "Running Training epochs: "):
+    
+    criterion = torch.nn.CrossEntropyLoss()
 
+    for ep in range(num_epochs):
         train_loss, val_loss, val_acc = train_model(model,
                                                     train_loader,
                                                     optimizer,
                                                     scheduler,
-                                                    CELoss,
+                                                    criterion,
                                                     device,
-                                                    True
+                                                    val_model=val_model,
+                                                    val_loader=val_loader
                                                     )
-       
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
         val_accs.append(val_acc)
+        val_losses.append(val_loss)
         
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        loss_window = val_losses[-smooth_k:] if len(val_losses) >= smooth_k else val_losses
+        val_loss_sm = float(np.mean(loss_window))
+
+        if val_loss_sm < (best_val_loss_sm - min_delta_loss):
+            best_val_loss_sm = val_loss_sm
             epochs_no_improve = 0
+            torch.save({'epoch': ep,
+                        'model_state': model.state_dict(),
+                        'optimizer_state': optimizer.state_dict(),
+                        'val_loss_sm': val_loss_sm,
+                        'val_acc': val_acc},
+                        ckpt_path)
         else:
-            epochs_no_improve +=1
-        
-        if epochs_no_improve >= patience:
-            print("Ending training as validation loss doesn't improve.")
-            break
-    
-        run_logger.log({
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "val_accuracy": val_acc
-        })
-    
-    test_loss, test_acc = test_model(model, test_loader, CELoss, device)
-    run_logger.log({
-                    "test_accuracy": test_acc,
-                    "test_loss" : test_loss
-                            })
+            epochs_no_improve += 1
+            if (ep + 1) >= min_epochs and epochs_no_improve >= patience:
+                print(f"Early stopping at epoch {ep}."); break
 
-    run_logger.finish()
+        run_logger.log({"train_loss": train_loss,
+                        "val_loss": val_loss,
+                        "val_accuracy": val_acc,
+                        "best_val_loss_smoothed": best_val_loss_sm
+                        })
 
-    return
+    model.load_state_dict(torch.load(ckpt_path, map_location=device)['model_state'])
+    test_loss, test_acc = test_model(model, test_loader, criterion, device)
+    run_logger.log({"test_accuracy": test_acc, "test_loss": test_loss}); run_logger.finish()
+
 
 
 def get_model(model_name, model_config):
@@ -300,16 +288,6 @@ def get_model(model_name, model_config):
             num_out_classes=model_config['num_out'],
             alpha = model_config['alpha']
                                             )
-
-    if model_name == 'aggregate':
-
-        #TODO: Change this later, AggregateSequenceGrading Changed
-        model = ViTWithAggPositionalEncoding(
-            distance_metric=model_config['distance'], # cosine, euclidean
-            aggregate_method=model_config['agg'], # max_elem
-            alpha= model_config['alpha'],
-            num_out_classes=model_config['num_out']
-        )
     
     if model_name == 'aggregate_pf':
         model = ViTWithAggPositionalEncoding_PF(
@@ -317,8 +295,6 @@ def get_model(model_name, model_config):
             aggregate_method=model_config['aggregate_method'],
             seq_select_method = model_config['seq_select_method'],
             num_out_classes = model_config['num_out'],
-            add_coordinates = model_config['add_coordinates'],
-            K = model_config['K'],
             aggregate_dim = model_config['aggregate_dim'],
             norm_type = model_config['norm_type'],
             return_anchors = model_config['return_anchors'],

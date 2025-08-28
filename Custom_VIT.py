@@ -182,6 +182,7 @@ class DecompSequenceGrading(nn.Module):
             with torch.no_grad():
                 x_mean = x.mean(dim = 1, keepdim=True) # (bts, 1, ftrdim)
                 x_centered = x - x_mean # (bts, seq_len, ftr_dim)
+                #TODO: Should denominator be ftrdim ?
                 x_covar = (x_centered.transpose(1,2) @ x_centered ) / (seq_len - 1) # (bts, ftrdim, ftrdim)
 
                 # mag_vals - (bts, ftrdim), decomp_vectors - (bts, ftr_dim, ftr_dim). w,V
@@ -226,100 +227,18 @@ class DecompSequenceGrading(nn.Module):
 
         return decomposed_vectors
 
-# FIXED CLS TOKEN BUG
-class ViTWithAggPositionalEncoding(nn.Module):
-    def __init__(self,
-                 pretrained_model_name="google/vit-base-patch16-224",
-                 distance_metric='euclidean',
-                 aggregate_method='norm',
-                 alpha: Union[float, torch.Tensor] = 0.5,
-                 num_out_classes = 10
-                 ):
-        super().__init__()
 
-        # Load pre-trained ViT model
-        self.vit = ViTModel.from_pretrained(pretrained_model_name)
-
-        # Ensuring ViT layers are frozen
-        for param in self.vit.parameters():
-            param.requires_grad = False
-
-        self.distance_metric = distance_metric
-        self.aggregate_method = aggregate_method
-
-        # This is to check how much of custom positional encoding to be added to the original positional encoding
-        self.alpha = nn.Parameter(torch.tensor([alpha], dtype = torch.float32))
-
-        # norm is L2 Norm
-        self.custom_pos_encoding = AggregateSequenceGrading(
-            distance_metric=self.distance_metric,
-            aggregate_method=self.aggregate_method
-        )
-
-        # Classifier layer for the output
-        self.classifier = nn.Linear(self.vit.config.hidden_size,
-                                    num_out_classes)
-
-    def __get_vit_peout(self, pixel_values):
-
-        # Get patch embeddings - (bts, seq_len, hidden_size)
-        patch_emb_output = self.vit.embeddings.patch_embeddings(pixel_values)
-
-        # Add class token
-        cls_token = self.vit.embeddings.cls_token.expand(
-            patch_emb_output.shape[0], -1, -1)
-
-        # (batch_size, seq_len+1, hidden_size)
-        patch_emb_output = torch.cat((cls_token, patch_emb_output), dim=1)
-
-        # Apply dropout
-        patch_emb_output = self.vit.embeddings.dropout(patch_emb_output)  # (batch_size, seq_len+1, hidden_size)
-
-        # Get static positional embeddings
-        ViT_stat_pos_emb = self.vit.embeddings.position_embeddings  # (1, seq_len+1, hidden_size)
-
-        return (ViT_stat_pos_emb, patch_emb_output, cls_token)
-
-    def forward(self, pixel_values):
-
-        """
-        pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
-        """
-
-        # patch_emb_output -> (batch_size, seq_len+1, hidden_size)
-        ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
-
-        # Calculate custom positional encoding on sequence with class token
-        # (bts, seq_len, 1) or (bts, seq_len, feature_dim)
-        custom_pos_encodings = self.custom_pos_encoding(patch_emb_output[:, 1: , :])
-        patch_emb_output[:, 1:, :] = patch_emb_output[: , 1:, : ] * (self.alpha * custom_pos_encodings)
-
-        # Add both positional encodings
-        pos_encoded = patch_emb_output + ViT_stat_pos_emb # (batch_size, seq_len+1, hidden_size)
-
-        # Continue with the encoder
-        encoder_outputs = self.vit.encoder(pos_encoded) # It outputs only one item
-
-        sequence_output = encoder_outputs[0] # (batchsize,seq_len,hidden_size)
-
-        # Use [CLS] token for classification
-        cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
-
-        logits = self.classifier(cls_token) # (batch_size, num_out_classes)
-
-        return logits
-
-# FIXED CLS TOKEN BUG
+# BELOW THIS IS FIXED
 class ViTWithAggPositionalEncoding_PF(nn.Module):
     def __init__(self,
                  pretrained_model_name="google/vit-base-patch16-224",
                  distance_metric='euclidean',
                  aggregate_method='norm',
-                 seq_select_method = '',
+                 seq_select_method = 'weighted_sum',
                  aggregate_dim = 2,
                  norm_type = 2,
                  return_anchors = False,
-                 alpha: Union[float, torch.Tensor] = 0.5,
+                 alpha: Union[float, torch.Tensor] = 0.75,
                  num_out_classes = 10,
                  use_both = False
                  ):
@@ -390,18 +309,24 @@ class ViTWithAggPositionalEncoding_PF(nn.Module):
         # patch_emb_output -> (batch_size, seq_len, hidden_size)
         ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
 
-        # Calculate custom positional encoding on sequence with class token
-        # (bts, seq_len, 1) or (bts, seq_len, feature_dim)
-        custom_pos_encodings = self.custom_pos_encoding(patch_emb_output)
+        # Calculate custom positional encoding on sequence
+        # This already contains patch embedding output included in it
+        if self.return_anchors:
+            # Returns tuple if return_anchors=True, else just one
+            _, custom_pos_encodings, _ = self.custom_pos_encoding(patch_emb_output) # (bs, seqlen, ftrdim)
+        else:
+            custom_pos_encodings = self.custom_pos_encoding(patch_emb_output) # (bs, seqlen, ftrdim)
+        
+        
+        custom_pos_encodings = torch.cat([cls_token, custom_pos_encodings], dim = 1)
+        
 
         # Add both positional encodings
         if self.use_both:
-            custom_pos_enc_out = patch_emb_output + custom_pos_encodings
-            pos_encoded = custom_pos_enc_out + ViT_stat_pos_emb
+            pos_encoded = custom_pos_encodings + ViT_stat_pos_emb
 
         else:
-            custom_pos_enc_out = patch_emb_output * (self.alpha * custom_pos_encodings)
-            pos_encoded = custom_pos_enc_out + (1-self.alpha) * ViT_stat_pos_emb # (batch_size, seq_len+1, hidden_size)
+            pos_encoded = custom_pos_encodings + (self.alpha * ViT_stat_pos_emb) # (batch_size, seq_len, hidden_size)
 
         # Continue with the encoder
         encoder_outputs = self.vit.encoder(pos_encoded) # It outputs only one item
@@ -416,7 +341,6 @@ class ViTWithAggPositionalEncoding_PF(nn.Module):
         return logits
 
 
-# BELOW THIS IS FIXED
 # ViT which has custom positional encoding with injection on pre-LN
 # anchor vector is still a single patch, projected to linear space before injection
 class ViTWithAggPositionalEncoding_SP(nn.Module):
@@ -626,8 +550,7 @@ class ViTWithAggPositionalEncoding_RandNoise(nn.Module):
 
         return logits
 
-#TODO: Given Trend of FiLM style injections, even with random gaussian noise
-# These Decompose methods may have a bug , which needs to be fixed.
+
 class ViTWithDecompSequenceGrading(nn.Module):
     def __init__(self,
                  pretrained_model_name="google/vit-base-patch16-224",

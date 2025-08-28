@@ -4,16 +4,16 @@ def entropy_vec(x, req_dim = 2):
     """
     x is 3D (bs, seqlen, ftrdim)
     """
-    # Find max feature among `feature_dim` in each sequence for each image
-    max_feat_seq = x.max(axis = req_dim, keepdim = True).values # (batch_size, seq_len, 1)
-    min_feat_seq = x.min(axis = req_dim, keepdim = True).values # (batch_size, seq_len, 1)
+    # This is safest and non-Nan or non-Inf entropy
+    with torch.no_grad():
+        log_probs = torch.nn.functional.log_softmax(x.float(), dim = req_dim) # (bts, seqlen, ftrdim)
+        probs = log_probs.exp() # (bts, seqlen, ftrdim)
 
-    # normalizing patch embeddings to be between [0-1], for entropy calculation
-    normed_patches = torch.subtract(x, max_feat_seq)
-    normed_patches /= (torch.subtract(max_feat_seq, min_feat_seq) + 1e-8) # (batch_size, seqlen, ftr_dim)
+    # This is entropy
+    vector_values = - torch.sum(probs * log_probs, axis = req_dim) # (batch_size, seq_len)
 
-    probs = normed_patches / (normed_patches.sum(axis = req_dim, keepdim = True) + 1e-8) # (batch_size, seqlen, ftr_dim)
-    vector_values = - torch.sum(probs * torch.log(probs + 1e-8), axis = req_dim) # (batch_size, seq_len)
+    assert not torch.isnan(vector_values).all()
+    assert torch.isfinite(vector_values).all()
 
     return vector_values # (bs, seqlen)
 
@@ -28,6 +28,9 @@ def get_vector_agg(aggregate_method, x, req_dim, norm_type = None):
     if aggregate_method == 'norm':
         vector_values = torch.norm(x, p=norm_type, dim=req_dim)  # (batch_size, seq_len)
 
+        # This is to ensure values don't blow up
+        agg_vector_values = ( agg_vector_values - agg_vector_values.max(dim = -1, keepdim = True).values )  / (agg_vector_values.std(dim = -1, keepdim = True) + 1e-6) # (batch_size, seq_len)
+
     elif aggregate_method == 'sum':
         vector_values = torch.sum(x, dim=req_dim)  # (batch_size, seq_len)
 
@@ -35,7 +38,6 @@ def get_vector_agg(aggregate_method, x, req_dim, norm_type = None):
         vector_values, _ = torch.max(x, dim=req_dim)  # (batch_size, seq_len)
 
     elif aggregate_method == 'entropy':
-        #TODO: Ensure that it's scaled like pre-softmax norms
         vector_values = entropy_vec(x=x, req_dim=req_dim) # (batch_size, seq_len)
     
     elif aggregate_method == 'norm_softmax':
@@ -51,6 +53,34 @@ def get_vector_agg(aggregate_method, x, req_dim, norm_type = None):
         raise ValueError(f"Aggregate method: {aggregate_method} is not supported. Please provide one of : 'norm', 'sum' , 'max_elem','entropy")
 
     return vector_values
+
+
+def safe_pow_gate(x, s, *,  # x: (B,N,D), s∈[0,1]: importance per patch
+                  tau=2.0, alpha_lo=0.85, alpha_hi=1.15,
+                  eps=1e-3, mix=0.3):
+    """Goal of this function is to take importance score per sequence for each patch embedding. And then safely apply those improtance scores to:
+        ideally reduce ebeddings power of tokens that has low importance scores and increase power of embeddings that has higher improtance scores.
+        It chooses a safe alpha power and residually mixes original patch embeddings base don improtance scores.
+
+        x is 3D: (bs, seqlen, ftrdim)
+        s is 2D: ( bs, seqlen)
+    """
+
+    with torch.no_grad():
+        # 1) Bound magnitudes between (0-1) so pow>1 always shrinks
+        x_b = torch.tanh(x / tau)            # |x_b| ≤ 1
+
+        # 2) Map importance→exponent: low s ⇒ α>1 (shrink), high s ⇒ α<1 (expand)
+        # [..., None] = unsqueeze(-1)
+        α = alpha_lo + (alpha_hi - alpha_lo) * (1 - s)[..., None]  # (B,N,1)
+        α = torch.clamp(α, min=0.75, max=1.25) # Clamp a single alpha for power 
+
+        # 3) Signed, numerically-safe power
+        x_pow = x_b.sign() * (x_b.abs() + eps).pow(α)
+
+        # 4) Gentle residual mix to avoid over-suppression
+        return (1 - mix) * x + mix * x_pow
+
 
 
 def get_anchor_vectors(seq_select_method, vector_values, x, batch_indices):
@@ -73,10 +103,15 @@ def get_anchor_vectors(seq_select_method, vector_values, x, batch_indices):
         # so that it doesnt dilute distances when compute with original patch embeddings
         anchor_vectors = loo_weighsum_vector(weights = vector_values, original_vectors = x) # (batch_size, seqlen, ftrdim)
     
+    elif seq_select_method == 'safe_pow_gate':
+        # In this case, anchor vectors contain both patch embeddings and importance vector values embeed into one matrix.
+        anchor_vectors = safe_pow_gate(x = x, s = vector_values) # (bs, seqlen, ftrdim)
+    
     else:
         raise ValueError(f"Unsupported sequence selection method: {seq_select_method}.")
     
     return anchor_vectors
+
 
 
 def compute_single_patch_phi(anchor_values, x, K, add_coords = False, weights_sequences = None):
@@ -253,6 +288,7 @@ def loo_weighsum_vector(weights, original_vectors, eps=1e-8):
     original_vectors = original_vectors.float()
 
     # totals over all tokens
+    # This sum ensures all [0-1] probs are added together making 1, suitable for denominator.
     sum_w   = weights.sum(dim=1, keepdim=True)                      # (B,1)
     ws_all  = torch.bmm(weights.unsqueeze(1), original_vectors).squeeze(1)   # (B,D)
 
