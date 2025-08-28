@@ -105,7 +105,6 @@ def test_model(model, test_loader, CELoss, device):
     bloss = []; bacc = []
 
     for index, (image_batch, label_batch) in enumerate( iter(test_loader) ):
-        if index > 2: break
 
         image_batch = image_batch.to(device)
         label_batch = label_batch.to(device)
@@ -144,7 +143,7 @@ def get_val_splits(train_dataset, tr_size, val_size, tr_bs, val_bs):
     return(train_loader, val_loader)
 
 
-def validate_model(model, val_loader, CELoss):
+def validate_model(model, val_loader, CELoss, device):
     
     model.eval()
     with torch.no_grad():
@@ -154,7 +153,9 @@ def validate_model(model, val_loader, CELoss):
         
         for index, (batch_data, batch_labels) in tqdm( enumerate( iter(val_loader) ), total = num_batches, desc = "processing val batches"):
 
-            if index > 2: break
+            batch_data = batch_data.to(device)
+            batch_labels = batch_labels.to(device)
+
             outputs = model(batch_data)
             loss = CELoss(outputs, batch_labels)
             total_loss += loss.item()
@@ -178,8 +179,6 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
     model.train()
 
     for index, (image_batch, label_batch) in tqdm( enumerate( iter(train_loader) ) , total = len(train_loader), desc = "Processing train batches"):
-        
-        if index > 2: break
 
         image_batch = image_batch.to(device)
         label_batch = label_batch.to(device)
@@ -201,7 +200,7 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
     scheduler.step()
 
     if val_model:
-        val_loss, val_acc = validate_model(model, val_loader, CELoss)
+        val_loss, val_acc = validate_model(model, val_loader, CELoss, device)
         return (train_losses, val_loss, val_acc)
 
     else: return train_losses
@@ -343,7 +342,7 @@ def get_project_details(yaml_config_file, exp_name):
 
 if __name__ == "__main__":
 
-    yaml_project_name = "aggregate_pos_enc_LOO_FiLMInj"
+    yaml_project_name = "static_pos_enc"
 
     config_details = get_project_details("./configs.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
