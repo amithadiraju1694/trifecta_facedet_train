@@ -8,6 +8,7 @@ import random
 import wandb
 import numpy as np
 import yaml
+import os
 
 from Custom_VIT import (
     ViTWithDecompSequenceGrading,
@@ -20,7 +21,9 @@ from Custom_VIT import (
 
 
 
-def get_cifar10_loaders(batch_size=128, num_workers=4, data_dir='./data'):
+def get_cifar10_loaders(batch_size=128,data_dir='./data'):
+
+
     # CIFAR-10 mean and std for normalization
     mean = (0.4914, 0.4822, 0.4465)
     std = (0.2470, 0.2435, 0.2616)
@@ -28,7 +31,7 @@ def get_cifar10_loaders(batch_size=128, num_workers=4, data_dir='./data'):
     # Training transforms with augmentation and resize to 224x224
     # TODO: Use Deterministic Horizontal Flip from paper, and may be extend to Deterministic Affine Transform as well.
     train_transform = transforms.Compose([
-        transforms.Resize((224, 224)),  # Resize to ViT's expected input size
+        transforms.Resize((224, 224), antialias = False),  # Resize to ViT's expected input size
         transforms.RandomHorizontalFlip(),
         transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
         transforms.ToTensor(),
@@ -37,7 +40,7 @@ def get_cifar10_loaders(batch_size=128, num_workers=4, data_dir='./data'):
 
     # Test transforms with resize to 224x224
     test_transform = transforms.Compose([
-        transforms.Resize((224, 224)),  # Resize to ViT's expected input size
+        transforms.Resize((224, 224), antialias = False),  # Resize to ViT's expected input size
         transforms.ToTensor(),
         transforms.Normalize(mean, std),
     ])
@@ -46,12 +49,33 @@ def get_cifar10_loaders(batch_size=128, num_workers=4, data_dir='./data'):
     train_dataset = datasets.CIFAR10(root=data_dir, train=True, download=True, transform=train_transform)
     test_dataset = datasets.CIFAR10(root=data_dir, train=False, download=True, transform=test_transform)
 
+    if torch.cuda.is_available():
+        num_workers = min(16, os.cpu_count() or 8); pin_memory = True
+        persistent_workers = True; prefetch_factor = 4; drop_last = False
+    else:
+        num_workers = 2; pin_memory = False; persistent_workers = False
+        prefetch_factor = 1; drop_last = True
+
     # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                              num_workers=num_workers, pin_memory=False)
+    train_loader = DataLoader(train_dataset,
+                              batch_size=batch_size,
+                              shuffle=True,
+                              num_workers=num_workers,
+                              pin_memory=pin_memory,
+                              persistent_workers=persistent_workers,
+                              prefetch_factor = prefetch_factor,
+                              drop_last = drop_last
+                              )
     
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
-                             num_workers=num_workers, pin_memory=False)
+    test_loader = DataLoader(test_dataset,
+                             batch_size=batch_size,
+                             shuffle=True,
+                             num_workers=num_workers,
+                              pin_memory=pin_memory,
+                              persistent_workers=persistent_workers,
+                              prefetch_factor = prefetch_factor,
+                              drop_last = drop_last
+                             )
 
     return train_loader, test_loader
 
@@ -104,10 +128,14 @@ def test_model(model, test_loader, CELoss, device):
 
     bloss = []; bacc = []
 
-    for index, (image_batch, label_batch) in enumerate( iter(test_loader) ):
+    for index, (image_batch, label_batch) in tqdm( enumerate( iter(test_loader) ) , desc="Processing test batches", total = len(test_loader)):
 
         image_batch = image_batch.to(device)
         label_batch = label_batch.to(device)
+
+        if torch.cuda.is_avalable():
+                image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
+                label_batch = label_batch.to(device,non_blocking = True)
 
         with torch.no_grad():
 
@@ -146,16 +174,21 @@ def get_val_splits(train_dataset, tr_size, val_size, tr_bs, val_bs):
 def validate_model(model, val_loader, CELoss, device):
     
     model.eval()
-    with torch.no_grad():
+    
 
-        total_loss = 0; total_acc = 0
-        num_batches = len(val_loader)
+    total_loss = 0; total_acc = 0
+    num_batches = len(val_loader)
         
-        for index, (batch_data, batch_labels) in tqdm( enumerate( iter(val_loader) ), total = num_batches, desc = "processing val batches"):
+    for index, (batch_data, batch_labels) in tqdm( enumerate( iter(val_loader) ), total = num_batches, desc = "processing val batches"):
 
-            batch_data = batch_data.to(device)
-            batch_labels = batch_labels.to(device)
+        batch_data = batch_data.to(device)
+        batch_labels = batch_labels.to(device)
 
+        if torch.cuda.is_avalable():
+            batch_data = batch_data.to(device, non_blocking = True, memory_format=torch.channels_last)
+            batch_labels = batch_labels.to(device,non_blocking = True)
+
+        with torch.no_grad():
             outputs = model(batch_data)
             loss = CELoss(outputs, batch_labels)
             total_loss += loss.item()
@@ -164,8 +197,8 @@ def validate_model(model, val_loader, CELoss, device):
             accuracy = (predicted == batch_labels).float().mean().item()
             total_acc += accuracy
         
-        avg_val_loss = total_loss / num_batches
-        avg_val_acc = total_acc / num_batches
+    avg_val_loss = total_loss / num_batches
+    avg_val_acc = total_acc / num_batches
 
 
     return (avg_val_loss, avg_val_acc)
@@ -182,6 +215,10 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
 
         image_batch = image_batch.to(device)
         label_batch = label_batch.to(device)
+
+        if torch.cuda.is_available():
+            image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
+            label_batch = label_batch.to(device,non_blocking = True)
 
         optimizer.zero_grad()
 
@@ -209,9 +246,8 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
 def setup_training(num_epochs, model, run_logger, device,
                    patience=7, min_delta_loss=1e-8, min_epochs=20, smooth_k=3):
     
-    train_loader, test_loader = get_cifar10_loaders(batch_size=64, num_workers=2)
+    train_loader, test_loader = get_cifar10_loaders(batch_size=512)
 
-    model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, eta_min=1e-6)
 
@@ -219,6 +255,7 @@ def setup_training(num_epochs, model, run_logger, device,
     epochs_no_improve, ckpt_path = 0, 'best_by_valloss.pth'
     val_model = True; val_loader = None
 
+    # Split data for train and validation
     if val_model:
         total_tr_rows = len(train_loader.dataset)
         tr_rows = int(0.7 * total_tr_rows)
@@ -227,13 +264,17 @@ def setup_training(num_epochs, model, run_logger, device,
         train_loader, val_loader = get_val_splits(train_dataset = train_loader.dataset,
                     tr_size = tr_rows,
                     val_size = val_rows,
-                    tr_bs = 64,
-                    val_bs = 32)
+                    tr_bs = 256,
+                    val_bs = 256)
 
-    
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision('high')
+        torch.backends.cudnn.benchmark = True
+        model = model.to(device, memory_format=torch.channels_last)
+
     criterion = torch.nn.CrossEntropyLoss()
 
-    for ep in range(num_epochs):
+    for ep in tqdm( range(num_epochs) , desc = "Running epochs for training"):
         train_loss, val_loss, val_acc = train_model(model,
                                                     train_loader,
                                                     optimizer,
