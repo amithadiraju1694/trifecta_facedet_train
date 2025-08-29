@@ -1,4 +1,8 @@
 import torch
+from torch.utils.data import DataLoader, TensorDataset
+from torchvision.transforms import v2 as transforms
+from torchvision import datasets
+import os
 
 def entropy_vec(x, req_dim = 2):
     """
@@ -303,3 +307,106 @@ def loo_weighsum_vector(weights, original_vectors, eps=1e-8):
     # Optional strict check (debug)
     assert torch.isfinite(loo).all()
     return loo
+
+def get_cifar10_loaders_optimized(data_dir='./data'):
+
+    # CIFAR-10 mean and std for normalization
+    mean = (0.4914, 0.4822, 0.4465)
+    std = (0.2470, 0.2435, 0.2616)
+
+    # Training transforms with augmentation and resize to 224x224
+    # TODO: Use Deterministic Horizontal Flip from paper, and may be extend to Deterministic Affine Transform as well.
+    train_transform = transforms.Compose([
+                            transforms.ToImage(),                                       # PIL -> tensor (uint8)
+                            transforms.Resize((224,224), interpolation=transforms.InterpolationMode.BILINEAR, antialias=True),
+                            transforms.RandomHorizontalFlip(),
+                            transforms.RandomAffine(degrees=0, translate=(0.1,0.1), interpolation=transforms.InterpolationMode.BILINEAR),
+                            transforms.ToDtype(torch.float32, scale=True),              # now [0,1]
+                            transforms.Normalize(mean, std),
+                                        ])
+
+    # Test transforms with resize to 224x224
+    test_transform = transforms.Compose([
+        transforms.ToImage(), # PIL -> Tensor fast path
+        transforms.Resize((224, 224), interpolation = transforms.InterpolationMode.BILINEAR),  # Resize to ViT's expected input size
+        transforms.ToDtype(torch.float32, scale=True),
+        transforms.Normalize(mean, std),
+    ])
+
+    # Load datasets
+    train_dataset = datasets.CIFAR10(root=data_dir, train=True, download=True, transform=train_transform)
+    test_dataset = datasets.CIFAR10(root=data_dir, train=False, download=True, transform=test_transform)
+
+    return train_dataset, test_dataset
+
+def save_cached_split(ds, path, batch_size=512, num_workers=8, dtype=torch.float16):
+
+    """Saves tesnor data in specified path with the raw torch data set provided."""
+    
+    dl = DataLoader(ds,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    num_workers=num_workers,
+                    pin_memory=True,
+                    persistent_workers=True)
+    
+    Xs, Ys = [], []
+    
+    with torch.no_grad():
+    
+        for xb, yb in dl:
+            Xs.append(xb.to(dtype).contiguous().cpu())
+            Ys.append(yb.cpu())
+    
+    X = torch.cat(Xs); Y = torch.cat(Ys)
+    
+    torch.save({"images": X, "labels": Y}, path)
+
+def make_cached_loader(path, batch_size=512, shuffle=True, num_workers=8):
+
+    if not os.path.exists(path):
+        raise ValueError(f"Cached data not found in path: {path}. Please run prepare_cached_datasets function first.")
+    
+    blob = torch.load(path, map_location="cpu")
+    
+    ds = TensorDataset(blob["images"], blob["labels"])
+    
+    pin_memory = False; persistent_workers = False
+    if torch.cuda.is_available():
+        pin_memory = True
+        persistent_workers = True
+
+    return DataLoader(ds,
+                      batch_size=batch_size,
+                      shuffle=shuffle,
+                      num_workers=num_workers,
+                      pin_memory=pin_memory,
+                      persistent_workers=persistent_workers)
+
+def prepare_cached_datasets(cached_data_path):
+    """Cached path should end with / """
+    
+    if os.path.exists(cached_data_path + "train.pt") and os.path.exists(cached_data_path + "val.pt") and os.path.exists(cached_data_path + "test.pt"):
+        print("Cached data already exists. Skipping caching step.")
+        data_paths = {'train_data': cached_data_path + "train.pt", 'val_data': cached_data_path + "val.pt", 'test_data': cached_data_path + "test.pt"}
+        return data_paths
+    
+    # Get images data which are transformed with affines, resized to 224x224
+    train_raw , test_raw = get_cifar10_loaders_optimized(data_dir='./data')
+    
+    idx = torch.randperm(len(train_raw))
+    cut = int(0.7 * len(train_raw))
+
+    # Split train to train and validation sets
+    train_ds = torch.utils.data.Subset(train_raw, idx[:cut])
+    val_ds   = torch.utils.data.Subset(train_raw, idx[cut:])
+
+    
+    # Save pre-transformed image features into tensors
+    os.makedirs(cached_data_path, exist_ok=True)
+    save_cached_split(train_ds, cached_data_path + "train.pt")
+    save_cached_split(val_ds,   cached_data_path + "val.pt")
+    save_cached_split(test_raw, cached_data_path + "test.pt")
+
+    data_paths = {'train_data': cached_data_path + "train.pt", 'val_data': cached_data_path + "val.pt", 'test_data': cached_data_path + "test.pt"}
+    return data_paths

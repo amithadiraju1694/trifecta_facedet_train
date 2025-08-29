@@ -16,8 +16,9 @@ from Custom_VIT import (
     ViTWithAggPositionalEncoding_PF,
     ViTWithAggPositionalEncoding_SP,
     ViTWithAggPositionalEncoding_RandNoise
-     
       )
+
+from helpers import make_cached_loader
 
 
 
@@ -31,7 +32,9 @@ def get_cifar10_loaders(batch_size=128,data_dir='./data'):
     # Training transforms with augmentation and resize to 224x224
     # TODO: Use Deterministic Horizontal Flip from paper, and may be extend to Deterministic Affine Transform as well.
     train_transform = transforms.Compose([
-        transforms.Resize((224, 224), antialias = False),  # Resize to ViT's expected input size
+        transforms.ToImage(), # PIL -> Tensor fast path
+        transforms.Resize((224, 224), interpolation = transforms.InterpolationMode.BILINEAR),  # Resize to ViT's expected input size
+        transforms.ToDtype(torch.float32, scale=True),
         transforms.RandomHorizontalFlip(),
         transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
         transforms.ToTensor(),
@@ -40,7 +43,9 @@ def get_cifar10_loaders(batch_size=128,data_dir='./data'):
 
     # Test transforms with resize to 224x224
     test_transform = transforms.Compose([
-        transforms.Resize((224, 224), antialias = False),  # Resize to ViT's expected input size
+        transforms.ToImage(), # PIL -> Tensor fast path
+        transforms.Resize((224, 224), interpolation = transforms.InterpolationMode.BILINEAR),  # Resize to ViT's expected input size
+        transforms.ToDtype(torch.float32, scale=True),
         transforms.ToTensor(),
         transforms.Normalize(mean, std),
     ])
@@ -120,40 +125,62 @@ def get_device():
     return device
 
 
-def test_model(model, test_loader, CELoss, device):
+def batch_inference_template(model, data_loader, criterion, device):
+
+    """
+    
+    """
 
     model = model.to(device)
+
     # Test the model
     model.eval()
 
-    bloss = []; bacc = []
+    losses = []; accuracies = []
 
-    for index, (image_batch, label_batch) in tqdm( enumerate( iter(test_loader) ) , desc="Processing test batches", total = len(test_loader)):
-
-        image_batch = image_batch.to(device)
-        label_batch = label_batch.to(device)
+    for index, (image_batch, label_batch) in tqdm( enumerate( iter(data_loader) ) , desc="Processing batches", total = len(data_loader)):
 
         if torch.cuda.is_avalable():
-                image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
-                label_batch = label_batch.to(device,non_blocking = True)
+            image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
+            label_batch = label_batch.to(device,non_blocking = True)
 
-        with torch.no_grad():
+            # Though using bfloat16 during inference is optional, recommended to speed up inference on GPUs that support it.
+            with torch.no_grad(), torch.cuda.amp.autocast(dtype = torch.bfloat16):
+                outputs = model(image_batch)
+                loss = criterion(outputs, label_batch)
+                
+                _, predicted = torch.max(outputs, 1)
+                accuracy = (predicted == label_batch).float().mean().item()
 
-            test_outputs = model(image_batch)
-            test_loss = CELoss(test_outputs, label_batch)
-            
-            _, predicted = torch.max(test_outputs, 1)
-            accuracy = (predicted == label_batch).float().mean().item()
+                losses.append(loss.item())
+                accuracies.append(accuracy)
 
-            bloss.append(test_loss)
-            bacc.append(accuracy)
-    
+        else:
+            image_batch = image_batch.to(device)
+            label_batch = label_batch.to(device)
 
-    batch_loss = sum(bloss) / len(bloss)
-    batch_acc = sum(bacc) / len(bacc)
+            with torch.no_grad():
+
+                outputs = model(image_batch)
+                loss = criterion(outputs, label_batch)
+                
+                _, predicted = torch.max(outputs, 1)
+                accuracy = (predicted == label_batch).float().mean().item()
+
+                losses.append(loss.item())
+                accuracies.append(accuracy)
+        
+
+    batch_loss = sum(losses) / len(losses)
+    batch_acc = sum(accuracies) / len(accuracies)
 
     return (batch_loss, batch_acc)
 
+
+def test_model(model, test_loader, CELoss, device):
+    print("Testing model on test dataset")
+    test_loss, test_acc = batch_inference_template(model = model, data_loader = test_loader, criterion = CELoss, device = device)
+    return (test_loss, test_acc)
 
 def set_system_seed(seed_num):
     torch.manual_seed(seed_num)
@@ -172,37 +199,9 @@ def get_val_splits(train_dataset, tr_size, val_size, tr_bs, val_bs):
 
 
 def validate_model(model, val_loader, CELoss, device):
-    
-    model.eval()
-    
-
-    total_loss = 0; total_acc = 0
-    num_batches = len(val_loader)
-        
-    for index, (batch_data, batch_labels) in tqdm( enumerate( iter(val_loader) ), total = num_batches, desc = "processing val batches"):
-
-        batch_data = batch_data.to(device)
-        batch_labels = batch_labels.to(device)
-
-        if torch.cuda.is_avalable():
-            batch_data = batch_data.to(device, non_blocking = True, memory_format=torch.channels_last)
-            batch_labels = batch_labels.to(device,non_blocking = True)
-
-        with torch.no_grad():
-            outputs = model(batch_data)
-            loss = CELoss(outputs, batch_labels)
-            total_loss += loss.item()
-
-            _, predicted = torch.max(outputs, 1)
-            accuracy = (predicted == batch_labels).float().mean().item()
-            total_acc += accuracy
-        
-    avg_val_loss = total_loss / num_batches
-    avg_val_acc = total_acc / num_batches
-
-
-    return (avg_val_loss, avg_val_acc)
-
+    print("Validating model on validation dataset")
+    val_loss, val_acc = batch_inference_template(model = model, data_laoder = val_loader, criterion = CELoss, device = device)
+    return (val_loss, val_acc)
 
 def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_model = False, val_loader = None):
     
@@ -220,18 +219,20 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
             image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
             label_batch = label_batch.to(device,non_blocking = True)
 
+            with torch.cuda.amp.autocast(dtype = torch.bfloat16):
+                # Forward pass through the model through optimized feature representation
+                outputs = model(image_batch)
+        
+        else:
+            outputs = model(image_batch)
+
+
         optimizer.zero_grad()
-
-        # Forward pass through the model
-        outputs = model(image_batch)
         loss = CELoss(outputs, label_batch)
-
         batch_losses.append(loss.item())
         
         loss.backward()
         optimizer.step()
-
-        
 
     train_losses = sum(batch_losses)/len(batch_losses)
     scheduler.step()
@@ -246,27 +247,17 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
 def setup_training(num_epochs, model, run_logger, device,
                    patience=7, min_delta_loss=1e-8, min_epochs=20, smooth_k=3):
     
-    train_loader, test_loader = get_cifar10_loaders(batch_size=512)
+    train_loader = make_cached_loader('./data/cache/train.pt', batch_size=512, shuffle=True, num_workers=8)
+    val_loader = make_cached_loader('./data/cache/val.pt', batch_size=256, shuffle=True, num_workers=8)
+    test_loader = make_cached_loader('./data/cache/test.pt', batch_size=256, shuffle=False, num_workers=8)
+
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, eta_min=1e-6)
 
     val_accs, val_losses, best_val_loss_sm = [],[], float('inf')
     epochs_no_improve, ckpt_path = 0, 'best_by_valloss.pth'
-    val_model = True; val_loader = None
-
-    # Split data for train and validation
-    if val_model:
-        total_tr_rows = len(train_loader.dataset)
-        tr_rows = int(0.7 * total_tr_rows)
-        val_rows = int(total_tr_rows - tr_rows)
-        
-        train_loader, val_loader = get_val_splits(train_dataset = train_loader.dataset,
-                    tr_size = tr_rows,
-                    val_size = val_rows,
-                    tr_bs = 256,
-                    val_bs = 256)
-
+    
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision('high')
         torch.backends.cudnn.benchmark = True
@@ -275,41 +266,60 @@ def setup_training(num_epochs, model, run_logger, device,
     criterion = torch.nn.CrossEntropyLoss()
 
     for ep in tqdm( range(num_epochs) , desc = "Running epochs for training"):
-        train_loss, val_loss, val_acc = train_model(model,
-                                                    train_loader,
-                                                    optimizer,
-                                                    scheduler,
-                                                    criterion,
-                                                    device,
-                                                    val_model=val_model,
-                                                    val_loader=val_loader
-                                                    )
-        val_accs.append(val_acc)
-        val_losses.append(val_loss)
+
+        if ep % 2 == 0:
+            train_loss, val_loss, val_acc = train_model(model,
+                                                        train_loader,
+                                                        optimizer,
+                                                        scheduler,
+                                                        criterion,
+                                                        device,
+                                                        val_model=True,
+                                                        val_loader=val_loader
+                                                        )
         
-        loss_window = val_losses[-smooth_k:] if len(val_losses) >= smooth_k else val_losses
-        val_loss_sm = float(np.mean(loss_window))
+            val_accs.append(val_acc)
+            val_losses.append(val_loss)
+        
+            loss_window = val_losses[-smooth_k:] if len(val_losses) >= smooth_k else val_losses
+            val_loss_sm = float(np.mean(loss_window))
 
-        if val_loss_sm < (best_val_loss_sm - min_delta_loss):
-            best_val_loss_sm = val_loss_sm
-            epochs_no_improve = 0
-            torch.save({'epoch': ep,
-                        'model_state': model.state_dict(),
-                        'optimizer_state': optimizer.state_dict(),
-                        'val_loss_sm': val_loss_sm,
-                        'val_acc': val_acc},
-                        ckpt_path)
+            # Saving best model validation loss and a corresponding checkpoint
+            if val_loss_sm < (best_val_loss_sm - min_delta_loss):
+                best_val_loss_sm = val_loss_sm
+                epochs_no_improve = 0
+                torch.save({'epoch': ep,
+                            'model_state': model.state_dict(),
+                            'optimizer_state': optimizer.state_dict(),
+                            'val_loss_sm': val_loss_sm,
+                            'val_acc': val_acc},
+                            ckpt_path)
+            
+            # Terminating training because epoch didn't improve until patience time
+            else:
+                epochs_no_improve += 1
+                if (ep + 1) >= min_epochs and epochs_no_improve >= patience:
+                    print(f"Early stopping at epoch {ep}."); break
+
+            # Logging train and val metrics to wandb
+            run_logger.log({"train_loss": train_loss,
+                            "val_loss": val_loss,
+                            "val_accuracy": val_acc
+                            })
+        
+        # Logging only train metrics to wandb
         else:
-            epochs_no_improve += 1
-            if (ep + 1) >= min_epochs and epochs_no_improve >= patience:
-                print(f"Early stopping at epoch {ep}."); break
+            train_loss = train_model(model,
+                                     train_loader,
+                                     optimizer,
+                                     scheduler,
+                                     criterion,
+                                     device,
+                                     val_model=False
+                                     )
+            run_logger.log({"train_loss": train_loss})
 
-        run_logger.log({"train_loss": train_loss,
-                        "val_loss": val_loss,
-                        "val_accuracy": val_acc,
-                        "best_val_loss_smoothed": best_val_loss_sm
-                        })
-
+    print("Loading best model based on validation loss for testing")
     model.load_state_dict(torch.load(ckpt_path, map_location=device)['model_state'])
     test_loss, test_acc = test_model(model, test_loader, criterion, device)
     run_logger.log({"test_accuracy": test_acc, "test_loss": test_loss}); run_logger.finish()
