@@ -533,6 +533,11 @@ class ViTWithAggPositionalEncoding_RandNoise(nn.Module):
         s = torch.randn((bs, seqlen, ftrdim))
         b = torch.randn((bs, seqlen, ftrdim))
 
+        #TODO: These s and b needs to be modified to 1,0 in testing and random during train
+        if torch.cuda.is_available():
+            s = s.to('cuda', non_blocking = True)
+            b = b.to('cuda', non_blocking = True)
+
         # TODO: Not touching CLS Token for now. Need better approach, for finding sj,bj for CLS token
         # Below equation injection style is directly inspired from FiLM or CVPR style papers
         patch_emb_output = patch_emb_output * (1 + self.alpha * s) + self.gamma * b

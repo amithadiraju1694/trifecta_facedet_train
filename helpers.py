@@ -404,9 +404,13 @@ def prepare_cached_datasets(cached_data_path):
     
     # Save pre-transformed image features into tensors
     os.makedirs(cached_data_path, exist_ok=True)
+
     save_cached_split(train_ds, cached_data_path + "train.pt")
+    print("Written Train dataset ")
     save_cached_split(val_ds,   cached_data_path + "val.pt")
+    print("written validation dataset")
     save_cached_split(test_raw, cached_data_path + "test.pt")
+    print("written test dataset")
 
     data_paths = {'train_data': cached_data_path + "train.pt", 'val_data': cached_data_path + "val.pt", 'test_data': cached_data_path + "test.pt"}
     return data_paths

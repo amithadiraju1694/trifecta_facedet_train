@@ -18,7 +18,7 @@ from Custom_VIT import (
     ViTWithAggPositionalEncoding_RandNoise
       )
 
-from helpers import make_cached_loader
+from helpers import make_cached_loader, prepare_cached_datasets
 
 
 
@@ -140,7 +140,7 @@ def batch_inference_template(model, data_loader, criterion, device):
 
     for index, (image_batch, label_batch) in tqdm( enumerate( iter(data_loader) ) , desc="Processing batches", total = len(data_loader)):
 
-        if torch.cuda.is_avalable():
+        if torch.cuda.is_available():
             image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
             label_batch = label_batch.to(device,non_blocking = True)
 
@@ -200,7 +200,7 @@ def get_val_splits(train_dataset, tr_size, val_size, tr_bs, val_bs):
 
 def validate_model(model, val_loader, CELoss, device):
     print("Validating model on validation dataset")
-    val_loss, val_acc = batch_inference_template(model = model, data_laoder = val_loader, criterion = CELoss, device = device)
+    val_loss, val_acc = batch_inference_template(model = model, data_loader = val_loader, criterion = CELoss, device = device)
     return (val_loss, val_acc)
 
 def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_model = False, val_loader = None):
@@ -244,12 +244,12 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
     else: return train_losses
 
 
-def setup_training(num_epochs, model, run_logger, device,
-                   patience=7, min_delta_loss=1e-8, min_epochs=20, smooth_k=3):
+def setup_training(data_paths, num_epochs, model, run_logger, device,
+                   patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7):
     
-    train_loader = make_cached_loader('./data/cache/train.pt', batch_size=512, shuffle=True, num_workers=8)
-    val_loader = make_cached_loader('./data/cache/val.pt', batch_size=256, shuffle=True, num_workers=8)
-    test_loader = make_cached_loader('./data/cache/test.pt', batch_size=256, shuffle=False, num_workers=8)
+    train_loader = make_cached_loader(data_paths['train_data'], batch_size=512, shuffle=True, num_workers=8)
+    val_loader = make_cached_loader(data_paths['val_data'], batch_size=512, shuffle=True, num_workers=8)
+    test_loader = make_cached_loader(data_paths['test_data'], batch_size=512, shuffle=False, num_workers=8)
 
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -319,8 +319,9 @@ def setup_training(num_epochs, model, run_logger, device,
                                      )
             run_logger.log({"train_loss": train_loss})
 
-    print("Loading best model based on validation loss for testing")
-    model.load_state_dict(torch.load(ckpt_path, map_location=device)['model_state'])
+    checkpoint = torch.load(ckpt_path, map_location=device)
+    print(f"Best model in terms of validation loss was at: {checkpoint['epoch']+1} epoch, loading it for testing.")
+    model.load_state_dict(checkpoint['model_state'])
     test_loss, test_acc = test_model(model, test_loader, criterion, device)
     run_logger.log({"test_accuracy": test_acc, "test_loss": test_loss}); run_logger.finish()
 
@@ -393,7 +394,7 @@ def get_project_details(yaml_config_file, exp_name):
 
 if __name__ == "__main__":
 
-    yaml_project_name = "static_pos_enc"
+    yaml_project_name = "aggregate_pos_enc_FiLMInj"
 
     config_details = get_project_details("./configs.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
@@ -402,6 +403,8 @@ if __name__ == "__main__":
                       model_config = config_details['config']
                       )
     device = get_device()
+
+    data_paths = prepare_cached_datasets('./data/cache/')
 
     run_logger = init_wandb(team_name=config_details['team_name'],
                 project_name=config_details['project_name'],
@@ -412,4 +415,5 @@ if __name__ == "__main__":
     
     run_logger.log_code("./")
 
-    setup_training(config_details['config']['num_epochs'], model, run_logger, device)
+    
+    setup_training(data_paths , config_details['config']['num_epochs'], model, run_logger, device)
