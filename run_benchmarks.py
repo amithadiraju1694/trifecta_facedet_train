@@ -247,9 +247,9 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
 def setup_training(data_paths, num_epochs, model, run_logger, device,
                    patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7):
     
-    train_loader = make_cached_loader(data_paths['train_data'], batch_size=512, shuffle=True, num_workers=8)
-    val_loader = make_cached_loader(data_paths['val_data'], batch_size=512, shuffle=True, num_workers=8)
-    test_loader = make_cached_loader(data_paths['test_data'], batch_size=512, shuffle=False, num_workers=8)
+    train_loader = make_cached_loader(data_paths['train_data'], batch_size=512, shuffle=True, num_workers=4)
+    val_loader = make_cached_loader(data_paths['val_data'], batch_size=512, shuffle=True, num_workers=4)
+    test_loader = make_cached_loader(data_paths['test_data'], batch_size=512, shuffle=False, num_workers=4)
 
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)

@@ -260,7 +260,7 @@ class ViTWithAggPositionalEncoding_PF(nn.Module):
 
         # This is to check how much of custom positional encoding to be added to the original positional encoding
         # This is not a trainable parameter
-        self.alpha = alpha
+        self.alpha = torch.tensor( [alpha] , dtype = torch.float32)
 
         self.use_both = use_both
 
