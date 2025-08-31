@@ -260,7 +260,7 @@ class ViTWithAggPositionalEncoding_PF(nn.Module):
 
         # This is to check how much of custom positional encoding to be added to the original positional encoding
         # This is not a trainable parameter
-        self.alpha = alpha
+        self.alpha = torch.tensor( [alpha] , dtype = torch.float32)
 
         self.use_both = use_both
 
@@ -532,6 +532,11 @@ class ViTWithAggPositionalEncoding_RandNoise(nn.Module):
         # but requires multiple runs
         s = torch.randn((bs, seqlen, ftrdim))
         b = torch.randn((bs, seqlen, ftrdim))
+
+        #TODO: These s and b needs to be modified to 1,0 in testing and random during train
+        if torch.cuda.is_available():
+            s = s.to('cuda', non_blocking = True)
+            b = b.to('cuda', non_blocking = True)
 
         # TODO: Not touching CLS Token for now. Need better approach, for finding sj,bj for CLS token
         # Below equation injection style is directly inspired from FiLM or CVPR style papers
