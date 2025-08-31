@@ -20,7 +20,8 @@ from Custom_VIT import (
 
 from helpers import make_cached_loader, prepare_cached_datasets
 
-
+#TODO: Though this code beats baseline in all 4 seeds, it has criticul bug in forward pass , making it non-canonical ( identical )
+# to serve as baseline, which carries over to custom approaches as well. Need to fix that bug before publishing.
 
 def get_cifar10_loaders(batch_size=128,data_dir='./data'):
 
