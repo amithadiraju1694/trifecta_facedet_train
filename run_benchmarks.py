@@ -19,9 +19,11 @@ from Custom_VIT import (
       )
 
 from helpers import make_cached_loader, prepare_cached_datasets
+import warnings
+warnings.filterwarnings("ignore")
+os.environ["WANDB_SILENT"] = "true"
 
-#TODO: Though this code beats baseline in all 4 seeds, it has criticul bug in forward pass , making it non-canonical ( identical )
-# to serve as baseline, which carries over to custom approaches as well. Need to fix that bug before publishing.
+#TODO: This branch is to fix bugs in forward pass of Vanilla ViT Baseline
 
 def get_cifar10_loaders(batch_size=128,data_dir='./data'):
 
@@ -141,12 +143,13 @@ def batch_inference_template(model, data_loader, criterion, device):
 
     for index, (image_batch, label_batch) in tqdm( enumerate( iter(data_loader) ) , desc="Processing batches", total = len(data_loader)):
 
+        # cast to bfloat16 and perform inference on GPU with channels placed last in memory
         if torch.cuda.is_available():
             image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
             label_batch = label_batch.to(device,non_blocking = True)
 
             # Though using bfloat16 during inference is optional, recommended to speed up inference on GPUs that support it.
-            with torch.no_grad(), torch.cuda.amp.autocast(dtype = torch.bfloat16):
+            with torch.no_grad(), torch.amp.autocast(dtype = torch.bfloat16):
                 outputs = model(image_batch)
                 loss = criterion(outputs, label_batch)
                 
@@ -156,6 +159,7 @@ def batch_inference_template(model, data_loader, criterion, device):
                 losses.append(loss.item())
                 accuracies.append(accuracy)
 
+        # perform regular inference on CPU
         else:
             image_batch = image_batch.to(device)
             label_batch = label_batch.to(device)
@@ -207,23 +211,24 @@ def validate_model(model, val_loader, CELoss, device):
 def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_model = False, val_loader = None):
     
     batch_losses = [ ]
-    model = model.to(device)
-
     model.train()
 
     for index, (image_batch, label_batch) in tqdm( enumerate( iter(train_loader) ) , total = len(train_loader), desc = "Processing train batches"):
 
-        image_batch = image_batch.to(device)
+        # by default data should be in float32
+        image_batch = image_batch.to(device, dtype = torch.float32)
         label_batch = label_batch.to(device)
 
+        # cast ot bfloat16 and perform inference on GPU with channels placed last in memory
         if torch.cuda.is_available():
             image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
             label_batch = label_batch.to(device,non_blocking = True)
 
-            with torch.cuda.amp.autocast(dtype = torch.bfloat16):
+            with torch.amp.autocast(dtype = torch.bfloat16):
                 # Forward pass through the model through optimized feature representation
                 outputs = model(image_batch)
         
+        # perform regular inference on CPU
         else:
             outputs = model(image_batch)
 
@@ -245,20 +250,24 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
     else: return train_losses
 
 
-def setup_training(data_paths, num_epochs, model, run_logger, device,
-                   patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7):
+def setup_training(data_paths, num_epochs, model, device,
+                   patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7, run_logger = None,local_testing=False):
     
     train_loader = make_cached_loader(data_paths['train_data'], batch_size=512, shuffle=True, num_workers=4)
     val_loader = make_cached_loader(data_paths['val_data'], batch_size=512, shuffle=True, num_workers=4)
     test_loader = make_cached_loader(data_paths['test_data'], batch_size=512, shuffle=False, num_workers=4)
 
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    # only include trainable params to optimizer. Need to rebuild or add a new param group if adding new layers later
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, eta_min=1e-6)
 
     val_accs, val_losses, best_val_loss_sm = [],[], float('inf')
     epochs_no_improve, ckpt_path = 0, 'best_by_valloss.pth'
     
+    # by default model should be in float 32
+    model = model.to(device, dtype = torch.float32)
+
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision('high')
         torch.backends.cudnn.benchmark = True
@@ -302,11 +311,12 @@ def setup_training(data_paths, num_epochs, model, run_logger, device,
                 if (ep + 1) >= min_epochs and epochs_no_improve >= patience:
                     print(f"Early stopping at epoch {ep}."); break
 
-            # Logging train and val metrics to wandb
-            run_logger.log({"train_loss": train_loss,
-                            "val_loss": val_loss,
-                            "val_accuracy": val_acc
-                            })
+            if not local_testing:
+                # Log only in remote experiments, not local
+                run_logger.log({"train_loss": train_loss,
+                                "val_loss": val_loss,
+                                "val_accuracy": val_acc
+                                })
         
         # Logging only train metrics to wandb
         else:
@@ -318,7 +328,8 @@ def setup_training(data_paths, num_epochs, model, run_logger, device,
                                      device,
                                      val_model=False
                                      )
-            run_logger.log({"train_loss": train_loss})
+            # Log only in remote experiments, not local
+            if not local_testing: run_logger.log({"train_loss": train_loss})
 
     checkpoint = torch.load(ckpt_path, map_location=device)
     print(f"Best model in terms of validation loss was at: {checkpoint['epoch']+1} epoch, loading it for testing.")
@@ -396,6 +407,7 @@ def get_project_details(yaml_config_file, exp_name):
 if __name__ == "__main__":
 
     yaml_project_name = "aggregate_pos_enc_FiLMInj"
+    log_metrics = False
 
     config_details = get_project_details("./configs.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
@@ -407,14 +419,24 @@ if __name__ == "__main__":
 
     data_paths = prepare_cached_datasets('./data/cache/')
 
-    run_logger = init_wandb(team_name=config_details['team_name'],
-                project_name=config_details['project_name'],
-                run_name = config_details['run_name'] + '_' + str(config_details['config']['system_seed'] ),
-                secret_key=config_details['secret_key'],
-                additional_config = config_details['config']
-                )
-    
-    run_logger.log_code("./")
+    if log_metrics:
+        run_logger = init_wandb(team_name=config_details['team_name'],
+                    project_name=config_details['project_name'],
+                    run_name = config_details['run_name'] + '_' + str(config_details['config']['system_seed'] ),
+                    secret_key=config_details['secret_key'],
+                    additional_config = config_details['config']
+                    )
+        
+        run_logger.log_code("./")
 
+    setup_training(data_paths = data_paths,
+                   num_epochs = config_details['config']['num_epochs'],
+                   model = model,
+                   device=device,
+                   patience=10,
+                   min_delta_loss=1e-8,
+                   min_epochs=20,
+                   smooth_k=3,
+                   run_logger = run_logger if log_metrics else None,
+                   local_testing= not log_metrics)
     
-    setup_training(data_paths , config_details['config']['num_epochs'], model, run_logger, device)

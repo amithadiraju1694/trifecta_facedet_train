@@ -228,7 +228,7 @@ class DecompSequenceGrading(nn.Module):
         return decomposed_vectors
 
 
-# BELOW THIS IS FIXED
+# TODO: All ViTs Needs to be modified, to add dropout at relevant location and to add layernorm after encoder, before classifier.
 class ViTWithAggPositionalEncoding_PF(nn.Module):
     def __init__(self,
                  pretrained_model_name="google/vit-base-patch16-224",
@@ -343,6 +343,7 @@ class ViTWithAggPositionalEncoding_PF(nn.Module):
 
 # ViT which has custom positional encoding with injection on pre-LN
 # anchor vector is still a single patch, projected to linear space before injection
+# Thiss if fixed
 class ViTWithAggPositionalEncoding_SP(nn.Module):
     def __init__(self,
                  pretrained_model_name="google/vit-base-patch16-224",
@@ -364,6 +365,8 @@ class ViTWithAggPositionalEncoding_SP(nn.Module):
         # Ensuring ViT layers are frozen
         for param in self.vit.parameters():
             param.requires_grad = False
+        
+        self.vit.eval()
 
         self.distance_metric = distance_metric
         self.aggregate_method = aggregate_method
@@ -416,16 +419,8 @@ class ViTWithAggPositionalEncoding_SP(nn.Module):
         cls_token = self.vit.embeddings.cls_token.expand(
             patch_emb_output.shape[0], -1, -1)
 
-        # Apply dropout
-        patch_emb_output = self.vit.embeddings.dropout(patch_emb_output)  # (batch_size, seq_len+1, hidden_size)
-
         # Get static positional embeddings
         ViT_stat_pos_emb = self.vit.embeddings.position_embeddings  # (1, seq_len+1, hidden_size)
-
-        # Detaching to ensure gradients don't follow back on to pre-trained Graph
-        patch_emb_output = patch_emb_output.detach()
-        ViT_stat_pos_emb = ViT_stat_pos_emb.detach()
-        cls_token = cls_token.detach()
 
         return (ViT_stat_pos_emb, patch_emb_output, cls_token)
 
@@ -435,8 +430,9 @@ class ViTWithAggPositionalEncoding_SP(nn.Module):
         pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
         """
 
-        # patch_emb_out - > (batch_size, seq_len, hidden_size)
-        ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
+        with torch.no_grad():
+            # patch_emb_out - > (batch_size, seq_len, hidden_size)
+            ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
 
         # Calculate custom positional encoding on sequence with class token
         # (bts, seq_len, 1) or (bts, seq_len, feature_dim)
@@ -455,18 +451,17 @@ class ViTWithAggPositionalEncoding_SP(nn.Module):
         s = custom_pos_encodings[:, :, :self.vit.config.hidden_size] # (bs, seqlen, ftrdim)
         b = custom_pos_encodings[:, :, self.vit.config.hidden_size: ] # (bs, seqlen, ftrdim)
 
-        # TODO: Not touching CLS Token for now. Need better approach, for finding sj,bj for CLS token
-        # Below equation injection style is directly inspired from FiLM or CVPR style papers
         patch_emb_output = patch_emb_output * (1 + self.alpha * s) + self.gamma * b
         patch_emb_output = torch.cat([cls_token, patch_emb_output], dim = 1)
         pos_encoded = patch_emb_output + ViT_stat_pos_emb
 
+        position_encoded = self.vit.embeddings.dropout(pos_encoded) # (batch_size, seq_len+1, hidden_size)
 
         # Continue with the encoder
-        encoder_outputs = self.vit.encoder(pos_encoded) # It outputs only one item
-        sequence_output = encoder_outputs[0] # (batchsize,seq_len,hidden_size)
+        encoder_outputs = self.vit.encoder(position_encoded, return_dict = True)  # It outputs only one item
+        sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state) # (batchsize, seq_len, hidden_size)
 
-        # Use [CLS] token for classification
+        # Use [CLS] token for classification, since it attends to all future tokens
         cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
         logits = self.classifier(cls_token) # (batch_size, num_out_classes)
 
@@ -655,7 +650,7 @@ class ViTWithDecompSequenceGrading(nn.Module):
 
         return logits
 
-
+# THis is also fixed
 class ViTWithStaticPositionalEncoding(nn.Module):
     def __init__(self,
                     pretrained_model_name="google/vit-base-patch16-224",
@@ -668,6 +663,9 @@ class ViTWithStaticPositionalEncoding(nn.Module):
         for param in self.vit.parameters():
             param.requires_grad = False
         
+        # Setting only the backbone to be frozen
+        self.vit.eval()
+    
         # Classifier layer for the output
         self.classifier = nn.Linear(self.vit.config.hidden_size, num_out_classes)
 
@@ -680,35 +678,34 @@ class ViTWithStaticPositionalEncoding(nn.Module):
         cls_token = self.vit.embeddings.cls_token.expand(
             patch_emb_output.shape[0], -1, -1)
         
-        # (batch_size, seq_len+1, hidden_size)
+        # (batch_size, seq_len+1, hidden_size). This is right order for concatenating with CLS in baseline, but not for custom approaches.
         patch_emb_output = torch.cat((cls_token, patch_emb_output), dim=1)
+        absolute_pe = self.vit.embeddings.position_embeddings # (1, seqlen+1, ftrdim)
 
-        # Apply dropout
-        patch_emb_output = self.vit.embeddings.dropout(patch_emb_output)  # (batch_size, seq_len+1, hidden_size)
+        position_encoded = patch_emb_output + absolute_pe # (bs, seqlen+1, ftrdim)
+        position_encoded = self.vit.embeddings.dropout(position_encoded)  # (batch_size, seq_len+1, hidden_size)
+    
 
-        # Get static positional embeddings
-        ViT_stat_pos_emb = self.vit.embeddings.position_embeddings  # (1, seq_len+1, hidden_size)
-
-        return (ViT_stat_pos_emb, patch_emb_output, cls_token)
+        return position_encoded
 
     def forward(self, pixel_values):
         """
         pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
         """
-        # (batch_size, seq_len+1, hidden_size), BASIC STATIS POS ENC FROM ViT
-        ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
 
-        # Add static positional embeddings
-        pos_encoded = patch_emb_output + ViT_stat_pos_emb  # (batch_size, seq_len+1, hidden_size)
+        with torch.no_grad():
 
-        # Continue with the encoder
-        encoder_outputs = self.vit.encoder(pos_encoded)  # It outputs only one item
+            # (batch_size, seq_len+1, hidden_size), BASIC STATIS POS ENC FROM ViT
+            position_encoded_output = self.__get_vit_peout(pixel_values)
 
-        sequence_output = encoder_outputs[0]  # (batchsize, seq_len, hidden_size)
+            # Continue with the encoder
+            encoder_outputs = self.vit.encoder(position_encoded_output, return_dict = True)  # It outputs only one item
+            sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state) # (batchsize, seq_len, hidden_size)
 
-        # Use [CLS] token for classification, since it attends to all future tokens
-        cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
+            # Use [CLS] token for classification, since it attends to all future tokens
+            cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
 
+        # Compute gradients only for last layer for fine tuning
         logits = self.classifier(cls_token)  # (batch_size, num_out_classes)
 
         return logits

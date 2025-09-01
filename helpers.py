@@ -349,17 +349,13 @@ def save_cached_split(ds, path, batch_size=512, num_workers=8, dtype=torch.float
                     num_workers=num_workers,
                     pin_memory=True,
                     persistent_workers=True)
-    
     Xs, Ys = [], []
-    
     with torch.no_grad():
-    
         for xb, yb in dl:
             Xs.append(xb.to(dtype).contiguous().cpu())
             Ys.append(yb.cpu())
     
     X = torch.cat(Xs); Y = torch.cat(Ys)
-    
     torch.save({"images": X, "labels": Y}, path)
 
 def make_cached_loader(path, batch_size=512, shuffle=True, num_workers=8):
@@ -401,15 +397,19 @@ def prepare_cached_datasets(cached_data_path):
     train_ds = torch.utils.data.Subset(train_raw, idx[:cut])
     val_ds   = torch.utils.data.Subset(train_raw, idx[cut:])
 
+    device_dtype = torch.float32
+    if torch.cuda.is_available():
+        device_dtype = torch.float16
+
     
     # Save pre-transformed image features into tensors
     os.makedirs(cached_data_path, exist_ok=True)
 
-    save_cached_split(train_ds, cached_data_path + "train.pt")
+    save_cached_split(train_ds, cached_data_path + "train.pt", dtype=device_dtype)
     print("Written Train dataset ")
-    save_cached_split(val_ds,   cached_data_path + "val.pt")
+    save_cached_split(val_ds,   cached_data_path + "val.pt", dtype = device_dtype)
     print("written validation dataset")
-    save_cached_split(test_raw, cached_data_path + "test.pt")
+    save_cached_split(test_raw, cached_data_path + "test.pt", dtype=device_dtype)
     print("written test dataset")
 
     data_paths = {'train_data': cached_data_path + "train.pt", 'val_data': cached_data_path + "val.pt", 'test_data': cached_data_path + "test.pt"}
