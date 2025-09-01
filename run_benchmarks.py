@@ -450,7 +450,7 @@ if __name__ == "__main__":
                    num_epochs = config_details['config']['num_epochs'],
                    model = model,
                    device=device,
-                   batch_size = 64,
+                   batch_size = 512 if torch.cuda.is_available() else 64,
                    patience=10,
                    min_delta_loss=1e-8,
                    min_epochs=20,

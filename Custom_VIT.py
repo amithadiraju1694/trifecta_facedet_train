@@ -2,6 +2,7 @@ import torch
 torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
 from transformers import ViTModel
+import math
 from typing import Optional,Union
 
 from helpers import (
@@ -226,6 +227,94 @@ class DecompSequenceGrading(nn.Module):
 
         return decomposed_vectors
 
+
+class PEG(nn.Module):
+    """Position Encoding Generator (CPVT): depth-wise 3x3 conv on patch grid."""
+    def __init__(self, dim, k=3):
+        super().__init__()
+        pad = k // 2
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size=k, padding=pad, groups=dim, bias=True)
+
+    def forward(self, x, H, W):
+        # x: (B, N, D) where N = H*W (patch tokens only, no CLS)
+        B, N, D = x.shape
+        x2d = x.transpose(1, 2).contiguous().view(B, D, H, W)   # (B,D,H,W)
+        pe = self.dwconv(x2d)                                   # (B,D,H,W)
+        pe = pe.view(B, D, H*W).transpose(1, 2).contiguous()    # (B,N,D)
+        return x + pe                                           # residual PEG (canonical)
+
+class ViTWithPEG(nn.Module):
+    """
+    CPVT-like: PEG once before the encoder
+    Uses the standard single 'encoder' (stack of L transformer blocks).
+    """
+    def __init__(self,
+                 base_ckpt="google/vit-base-patch16-224",
+                 num_labels=10,
+                 perc_ape: float = 1.0
+                 ):
+        super().__init__()
+        # backbone without classification head
+        self.backbone = ViTModel.from_pretrained(base_ckpt)
+        self.num_labels = num_labels
+        self.perc_ape = perc_ape
+
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        
+        self.backbone.eval()
+        
+        ftr_dim = self.backbone.config.hidden_size
+        self.peg = PEG(ftr_dim, k=3)
+
+        self.classifier = nn.Linear(ftr_dim, num_labels)
+    
+    def __get_vit_peout(self, pixel_values):
+
+        # Get patch embeddings - (bts, seq_len, hidden_size)
+        patch_emb_output = self.vit.embeddings.patch_embeddings(pixel_values)
+
+        # Add class token
+        cls_token = self.vit.embeddings.cls_token.expand(
+            patch_emb_output.shape[0], -1, -1)
+
+        # Get static positional embeddings
+        ViT_stat_pos_emb = self.vit.embeddings.position_embeddings  # (1, seq_len+1, hidden_size)
+
+        return (ViT_stat_pos_emb, patch_emb_output, cls_token)
+
+    def forward(self, pixel_values, train_mode = True):
+        
+        
+        with torch.no_grad():
+            # patch_emb_output - (bs, seqlen, ftrdim)
+            ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
+
+        _, seqlen, _ = patch_emb_output.shape
+        H = W = int(math.sqrt(seqlen))  # assumes square grids (ViT 224/16 => 14x14)
+        assert H*W == seqlen, "Non-square or unexpected grid; compute H,W from image/patch sizes."
+
+        # When PEG is used, patch embeddings themselves contain positional + patch information. So, can take this as-is.
+        patch_emb_output = self.peg(x=patch_emb_output, H=H, W=W)  # (bs, seqlen, ftrdim)
+        patch_emb_output = torch.cat([cls_token, patch_emb_output], dim=1) # (bs,seqlen+1,ftrdim)
+
+        # NO absolute position embeddings in canonical CPVT
+        pos_encoded = patch_emb_output + ( self.perc_ape * ViT_stat_pos_emb )  # (bs, seqlen+1, ftrdim)
+
+        # (optional) embedding dropout as in ViT; harmless if p=0
+        position_encoded = self.backbone.embeddings.dropout(pos_encoded)
+
+        # Single encoder (stack of L transformer blocks)
+        encoder_outputs = self.backbone.encoder(position_encoded, return_dict=True)
+        sequence_output = self.backbone.layernorm(encoder_outputs.last_hidden_state)              # final LN
+
+        req_token = sequence_output[:, 0]  #(bs, seqlen)
+        logits = self.classifier(req_token)  #(bs, num_labels)
+        
+        return logits
+
+
+
 class ViTRADAR_SoftDegrade(nn.Module):
     def __init__(self,
                  pretrained_model_name="google/vit-base-patch16-224",
@@ -323,9 +412,8 @@ class ViTRADAR_SoftDegrade(nn.Module):
         encoder_outputs = self.vit.encoder(position_encoded, return_dict = True)  # It outputs only one item
         sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state) # (batchsize, seq_len, hidden_size)
 
-        # Use [CLS] token for classification, since it attends to all future tokens
-        cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
-        logits = self.classifier(cls_token) # (batch_size, num_out_classes)
+        req_token = sequence_output[:, 0]  #(bs, seqlen)
+        logits = self.classifier(req_token)  #(bs, num_labels)
 
         return logits
 
@@ -451,9 +539,8 @@ class ViTRADAR_SoftAnchor_v1(nn.Module):
         encoder_outputs = self.vit.encoder(position_encoded, return_dict = True)  # It outputs only one item
         sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state) # (batchsize, seq_len, hidden_size)
 
-        # Use [CLS] token for classification, since it attends to all future tokens
-        cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
-        logits = self.classifier(cls_token) # (batch_size, num_out_classes)
+        req_token = sequence_output[:, 0]  #(bs, seqlen)
+        logits = self.classifier(req_token)  #(bs, num_labels)
 
         return logits
 
@@ -576,9 +663,8 @@ class ViTRADAR_SoftAnchor_v2(nn.Module):
         encoder_outputs = self.vit.encoder(position_encoded, return_dict = True)  # It outputs only one item
         sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state) # (batchsize, seq_len, hidden_size)
 
-        # Use [CLS] token for classification, since it attends to all future tokens
-        cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
-        logits = self.classifier(cls_token) # (batch_size, num_out_classes)
+        req_token = sequence_output[:, 0]  #(bs, seqlen)
+        logits = self.classifier(req_token)  #(bs, num_labels)
 
         return logits
 
@@ -680,10 +766,10 @@ class ViTFiLM_RandNoise(nn.Module):
             sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state) # (batchsize, seq_len, hidden_size)
 
             # Use [CLS] token for classification, since it attends to all future tokens
-            cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
+            req_token = sequence_output[:, 0]  #(bs, seqlen)
 
 
-        logits = self.classifier(cls_token) # (batch_size, num_out_classes)
+        logits = self.classifier(req_token)  #(bs, num_labels)
 
         return logits
 
@@ -776,13 +862,10 @@ class ViTWithDecompSequenceGrading(nn.Module):
 
         # Continue with the encoder
         encoder_outputs = self.vit.encoder(pos_encoded) # It outputs only one item
-
         sequence_output = encoder_outputs[0] # (batchsize,seq_len,hidden_size)
 
-        # Use [CLS] token for classification
-        cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
-
-        logits = self.classifier(cls_token) # (batch_size, num_out_classes)
+        req_token = sequence_output[:, 0]  #(bs, seqlen)
+        logits = self.classifier(req_token)  #(bs, num_labels)
 
         return logits
 
