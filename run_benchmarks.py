@@ -246,11 +246,12 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
 
 
 def setup_training(data_paths, num_epochs, model, device,
+                   batch_size = 512,
                    patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7, run_logger = None,local_testing=False):
     
-    train_loader = make_cached_loader(data_paths['train_data'], batch_size=64, shuffle=True, num_workers=4)
-    val_loader = make_cached_loader(data_paths['val_data'], batch_size=64, shuffle=True, num_workers=4)
-    test_loader = make_cached_loader(data_paths['test_data'], batch_size=64, shuffle=False, num_workers=4)
+    train_loader = make_cached_loader(data_paths['train_data'], batch_size=batch_size, shuffle=True, num_workers=4)
+    val_loader = make_cached_loader(data_paths['val_data'], batch_size=batch_size, shuffle=True, num_workers=4)
+    test_loader = make_cached_loader(data_paths['test_data'], batch_size=batch_size, shuffle=False, num_workers=4)
 
     # only include trainable params to optimizer. Need to rebuild or add a new param group if adding new layers later
     params = [p for p in model.parameters() if p.requires_grad]
@@ -406,7 +407,7 @@ def get_project_details(yaml_config_file, exp_name):
 if __name__ == "__main__":
 
     yaml_project_name = "aggregate_pos_enc_FiLMInj"
-    log_metrics = False
+    log_metrics = True
 
     config_details = get_project_details("./configs.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
@@ -432,6 +433,7 @@ if __name__ == "__main__":
                    num_epochs = config_details['config']['num_epochs'],
                    model = model,
                    device=device,
+                   batch_size = 512,
                    patience=10,
                    min_delta_loss=1e-8,
                    min_epochs=20,
