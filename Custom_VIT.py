@@ -108,7 +108,6 @@ class AggregateSequenceGrading(nn.Module):
         
         return distances
 
-
 class DecompSequenceGrading(nn.Module):
     """
         Custom positional encoding based on Eigen value decomposition of sequences
@@ -227,9 +226,7 @@ class DecompSequenceGrading(nn.Module):
 
         return decomposed_vectors
 
-
-# TODO: Excep SP and Static, all are moved
-class ViTWithAggPositionalEncoding_PF(nn.Module):
+class ViTRADAR_SoftDegrade(nn.Module):
     def __init__(self,
                  pretrained_model_name="google/vit-base-patch16-224",
                  distance_metric='euclidean',
@@ -287,30 +284,23 @@ class ViTWithAggPositionalEncoding_PF(nn.Module):
         cls_token = self.vit.embeddings.cls_token.expand(
             patch_emb_output.shape[0], -1, -1)
 
-        # Apply dropout
-        patch_emb_output = self.vit.embeddings.dropout(patch_emb_output)  # (batch_size, seq_len+1, hidden_size)
-
         # Get static positional embeddings
         ViT_stat_pos_emb = self.vit.embeddings.position_embeddings  # (1, seq_len+1, hidden_size)
 
-        # Detaching to ensure gradients don't follow back on to pre-trained Graph
-        patch_emb_output = patch_emb_output.detach()
-        ViT_stat_pos_emb = ViT_stat_pos_emb.detach()
-        cls_token = cls_token.detach()
-
         return (ViT_stat_pos_emb, patch_emb_output, cls_token)
 
-    def forward(self, pixel_values):
+
+    def forward(self, pixel_values, train_mode = True):
 
         """
         pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
         """
 
-        # patch_emb_output -> (batch_size, seq_len, hidden_size)
-        ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
+        with torch.no_grad():
+            # patch_emb_output -> (batch_size, seq_len, hidden_size)
+            ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
 
-        # Calculate custom positional encoding on sequence
-        # This already contains patch embedding output included in it
+        
         if self.return_anchors:
             # Returns tuple if return_anchors=True, else just one
             _, custom_pos_encodings, _ = self.custom_pos_encoding(patch_emb_output) # (bs, seqlen, ftrdim)
@@ -320,31 +310,27 @@ class ViTWithAggPositionalEncoding_PF(nn.Module):
         
         custom_pos_encodings = torch.cat([cls_token, custom_pos_encodings], dim = 1)
         
-
         # Add both positional encodings
         if self.use_both:
-            pos_encoded = custom_pos_encodings + ViT_stat_pos_emb
+            position_encoded = custom_pos_encodings + ViT_stat_pos_emb
 
         else:
-            pos_encoded = custom_pos_encodings + (self.alpha * ViT_stat_pos_emb) # (batch_size, seq_len, hidden_size)
+            position_encoded = custom_pos_encodings + (self.alpha * ViT_stat_pos_emb) # (batch_size, seq_len, hidden_size)
+        
+        position_encoded = self.vit.embeddings.dropout(position_encoded) # (batch_size, seq_len+1, hidden_size)
 
         # Continue with the encoder
-        encoder_outputs = self.vit.encoder(pos_encoded) # It outputs only one item
+        encoder_outputs = self.vit.encoder(position_encoded, return_dict = True)  # It outputs only one item
+        sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state) # (batchsize, seq_len, hidden_size)
 
-        sequence_output = encoder_outputs[0] # (batchsize,seq_len,hidden_size)
-
-        # Use [CLS] token for classification
+        # Use [CLS] token for classification, since it attends to all future tokens
         cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
-
         logits = self.classifier(cls_token) # (batch_size, num_out_classes)
 
         return logits
 
-
-# ViT which has custom positional encoding with injection on pre-LN
-# anchor vector is still a single patch, projected to linear space before injection
-# Thiss if fixed
-class ViTWithAggPositionalEncoding_SP(nn.Module):
+# v1 contains both s and b when injecting into patch embeddings.
+class ViTRADAR_SoftAnchor_v1(nn.Module):
     def __init__(self,
                  pretrained_model_name="google/vit-base-patch16-224",
                  distance_metric='euclidean',
@@ -355,7 +341,8 @@ class ViTWithAggPositionalEncoding_SP(nn.Module):
                  K = 3,
                  aggregate_dim = 2,
                  norm_type = 2,
-                 return_anchors = True
+                 return_anchors = True,
+                 perc_ape: float = 0.5
                  ):
         super().__init__()
 
@@ -377,6 +364,7 @@ class ViTWithAggPositionalEncoding_SP(nn.Module):
         self.norm_type = norm_type
         self.return_anchors = return_anchors
         self.add_coordinates = add_coordinates # Whether to get co-ordinates output when dealing with phi vector computation
+        self.perc_ape = perc_ape # Percentage of Absolute Positional Encoding to be used in Forward pass
 
         # These are learnable params that govern how much % of s,b will be added to patch embeddings before sending to encoder.
         self.alpha = nn.Parameter(torch.tensor(0.1, dtype = torch.float32))  # Trainable scalar parameter
@@ -424,7 +412,7 @@ class ViTWithAggPositionalEncoding_SP(nn.Module):
 
         return (ViT_stat_pos_emb, patch_emb_output, cls_token)
 
-    def forward(self, pixel_values):
+    def forward(self, pixel_values, train_mode = True):
 
         """
         pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
@@ -453,7 +441,9 @@ class ViTWithAggPositionalEncoding_SP(nn.Module):
 
         patch_emb_output = patch_emb_output * (1 + self.alpha * s) + self.gamma * b
         patch_emb_output = torch.cat([cls_token, patch_emb_output], dim = 1)
-        pos_encoded = patch_emb_output + ViT_stat_pos_emb
+
+        # A Scalar percentage for using Absolute PEs are added to facilitate comparison with PEG.
+        pos_encoded = patch_emb_output + ( self.perc_ape * ViT_stat_pos_emb )
 
         position_encoded = self.vit.embeddings.dropout(pos_encoded) # (batch_size, seq_len+1, hidden_size)
 
@@ -467,11 +457,21 @@ class ViTWithAggPositionalEncoding_SP(nn.Module):
 
         return logits
 
-
-class ViTWithAggPositionalEncoding_RandNoise(nn.Module):
+# v2 doesn't contain both s and b when injecting into patch embeddings.
+# Just 's' - like injection
+class ViTRADAR_SoftAnchor_v2(nn.Module):
     def __init__(self,
                  pretrained_model_name="google/vit-base-patch16-224",
-                 num_out_classes = 10
+                 distance_metric='euclidean',
+                 aggregate_method='norm_softmax',
+                 seq_select_method = 'weighted_sum',
+                 num_out_classes = 10,
+                 add_coordinates = False,
+                 K = 3,
+                 aggregate_dim = 2,
+                 norm_type = 2,
+                 return_anchors = True,
+                 perc_ape: float = 0.5
                  ):
         super().__init__()
 
@@ -481,10 +481,46 @@ class ViTWithAggPositionalEncoding_RandNoise(nn.Module):
         # Ensuring ViT layers are frozen
         for param in self.vit.parameters():
             param.requires_grad = False
+        
+        self.vit.eval()
+
+        self.distance_metric = distance_metric
+        self.aggregate_method = aggregate_method
+        self.seq_select_method = seq_select_method
+        self.add_coordinates = add_coordinates
+        self.K = K
+        self.aggregate_dim = aggregate_dim
+        self.norm_type = norm_type
+        self.return_anchors = return_anchors
+        self.add_coordinates = add_coordinates # Whether to get co-ordinates output when dealing with phi vector computation
+        self.perc_ape = perc_ape # Percentage of Absolute Positional Encoding to be used in Forward pass
 
         # These are learnable params that govern how much % of s,b will be added to patch embeddings before sending to encoder.
         self.alpha = nn.Parameter(torch.tensor(0.1, dtype = torch.float32))  # Trainable scalar parameter
-        self.gamma = nn.Parameter(torch.tensor(0.1, dtype = torch.float32))  # Trainable scalar parameter
+
+        # Custom aggregation on top of patch embeddings.
+        self.custom_pos_encoding = AggregateSequenceGrading(
+            distance_metric=self.distance_metric,
+            aggregate_method=self.aggregate_method,
+            seq_select_method = self.seq_select_method,
+            aggregate_dim=self.aggregate_dim,
+            norm_type=self.norm_type,
+            return_anchors=self.return_anchors
+        )
+
+        # Computing output dimensions of Phi features
+        if self.add_coordinates:
+            # co-ordinates = 4, non-coords = 3 = 7
+            # 6K
+            phi_out_features = 7 + 6 * K
+        else:
+            phi_out_features = 3 + 2 * K
+
+        # Linear sequential layers to project phi onto new dimensions
+        self.projection_phi = nn.Sequential(
+            nn.Linear(in_features = phi_out_features, out_features=128),
+            nn.Linear(in_features = 128, out_features = self.vit.config.hidden_size)
+        )
 
         # Classifier layer for the output
         self.classifier = nn.Linear(self.vit.config.hidden_size,
@@ -499,57 +535,157 @@ class ViTWithAggPositionalEncoding_RandNoise(nn.Module):
         cls_token = self.vit.embeddings.cls_token.expand(
             patch_emb_output.shape[0], -1, -1)
 
-        # Apply dropout
-        patch_emb_output = self.vit.embeddings.dropout(patch_emb_output)  # (batch_size, seq_len+1, hidden_size)
-
         # Get static positional embeddings
         ViT_stat_pos_emb = self.vit.embeddings.position_embeddings  # (1, seq_len+1, hidden_size)
 
-        # Detaching to ensure gradients don't follow back on to pre-trained Graph
-        patch_emb_output = patch_emb_output.detach()
-        ViT_stat_pos_emb = ViT_stat_pos_emb.detach()
-        cls_token = cls_token.detach()
-
         return (ViT_stat_pos_emb, patch_emb_output, cls_token)
 
-    def forward(self, pixel_values):
+    def forward(self, pixel_values, train_mode = True):
 
         """
         pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
         """
 
-        # patch_emb_out - > (batch_size, seq_len, hidden_size)
-        ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
+        with torch.no_grad():
+            # patch_emb_out - > (batch_size, seq_len, hidden_size)
+            ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
 
-        bs, seqlen, ftrdim = patch_emb_output.shape
+        # Calculate custom positional encoding on sequence with class token
+        # (bts, seq_len, 1) or (bts, seq_len, feature_dim)
+        _, anchor_values, weights = self.custom_pos_encoding(patch_emb_output) # distances, anchor values, weights
 
-        # This is best way for cmparing against custom approaches, per-batch random s and b
-        # but requires multiple runs
-        s = torch.randn((bs, seqlen, ftrdim))
-        b = torch.randn((bs, seqlen, ftrdim))
+        # (bs, seqlen, num_phi_ftr)
+        phi_offset = compute_single_patch_phi(anchor_values=anchor_values,
+                                            x = patch_emb_output,
+                                            K = self.K,
+                                            add_coords=self.add_coordinates,
+                                            weights_sequences = weights
+                                                        )
+        
+        custom_pos_encodings = self.projection_phi(phi_offset) # (bs, seqlen, ftrdim)
+        patch_emb_output = patch_emb_output * (1 + self.alpha * custom_pos_encodings)
 
-        #TODO: These s and b needs to be modified to 1,0 in testing and random during train
-        if torch.cuda.is_available():
-            s = s.to('cuda', non_blocking = True)
-            b = b.to('cuda', non_blocking = True)
-
-        # TODO: Not touching CLS Token for now. Need better approach, for finding sj,bj for CLS token
-        # Below equation injection style is directly inspired from FiLM or CVPR style papers
-        patch_emb_output = patch_emb_output * (1 + self.alpha * s) + self.gamma * b
         patch_emb_output = torch.cat([cls_token, patch_emb_output], dim = 1)
-        pos_encoded = patch_emb_output + ViT_stat_pos_emb
+        
+        # A Scalar percentage for using Absolute PEs are added to facilitate comparison with PEG.
+        pos_encoded = patch_emb_output + ( self.perc_ape * ViT_stat_pos_emb )
 
+        position_encoded = self.vit.embeddings.dropout(pos_encoded) # (batch_size, seq_len+1, hidden_size)
 
         # Continue with the encoder
-        encoder_outputs = self.vit.encoder(pos_encoded) # It outputs only one item
-        sequence_output = encoder_outputs[0] # (batchsize,seq_len,hidden_size)
+        encoder_outputs = self.vit.encoder(position_encoded, return_dict = True)  # It outputs only one item
+        sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state) # (batchsize, seq_len, hidden_size)
 
-        # Use [CLS] token for classification
+        # Use [CLS] token for classification, since it attends to all future tokens
         cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
         logits = self.classifier(cls_token) # (batch_size, num_out_classes)
 
         return logits
 
+class ViTFiLM_RandNoise(nn.Module):
+    def __init__(self,
+                 exp_seed,
+                 pretrained_model_name="google/vit-base-patch16-224",
+                 num_out_classes = 10,
+                 use_both = False
+                 ):
+        super().__init__()
+
+        # Load pre-trained ViT model
+        self.vit = ViTModel.from_pretrained(pretrained_model_name)
+        self.use_both = use_both
+        self.num_out_classes = num_out_classes
+        
+        # Ensuring ViT layers are frozen
+        for param in self.vit.parameters():
+            param.requires_grad = False
+
+        self.vit.eval()
+
+        # These are learnable params that govern how much % of s,b will be added to patch embeddings before sending to encoder.
+        self.alpha = 1.0
+        self.noise_std_s = 1.0
+
+        if self.use_both:
+            self.gamma = 1.0
+            self.noise_std_b = 1.0
+
+        # Using generator for seeding manually, so that random noise are reproducible across runs
+        self.generator = torch.Generator(device='cpu' if torch.cuda.is_available() == False else 'cuda').manual_seed(exp_seed)
+
+        # Classifier layer for the output
+        self.classifier = nn.Linear(self.vit.config.hidden_size,
+                                    num_out_classes)
+
+    def __get_vit_peout(self, pixel_values):
+
+        # Get patch embeddings - (bts, seq_len, hidden_size)
+        patch_emb_output = self.vit.embeddings.patch_embeddings(pixel_values)
+
+        # Add class token
+        cls_token = self.vit.embeddings.cls_token.expand(
+            patch_emb_output.shape[0], -1, -1)
+
+        # Get static positional embeddings
+        ViT_stat_pos_emb = self.vit.embeddings.position_embeddings  # (1, seq_len+1, hidden_size)
+
+        return (ViT_stat_pos_emb, patch_emb_output, cls_token)
+
+
+    def generate_gaussian_noise(self, x,train_mode):
+        
+        # Create Gaussian Noise S and B Tensors during training and zeros otherwise
+        if train_mode:
+            s = torch.empty_like(x).normal_(mean=0.0, std=self.noise_std_s, generator=self.generator)
+            if self.use_both: b = torch.empty_like(x).normal_(mean=0.0, std=self.noise_std_b, generator=self.generator)
+        else:
+            shape_tuple = x.shape
+            s = torch.zeros(shape_tuple)
+            if self.use_both: b = torch.zeros(shape_tuple)
+
+        
+        if torch.cuda.is_available():
+            s = s.to('cuda', non_blocking = True)
+            if self.use_both:
+                b = b.to('cuda', non_blocking = True)
+            
+        
+        if self.use_both: return s,b
+        return s
+
+    def forward(self, pixel_values, train_mode = True):
+
+        """
+        pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
+        """
+
+        with torch.no_grad():
+            # patch_emb_out - > (batch_size, seq_len, hidden_size)
+            ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
+
+            if self.use_both:
+                s,b = self.generate_gaussian_noise( patch_emb_output,train_mode)
+                patch_emb_output = patch_emb_output * (1 + self.alpha * s) + self.gamma * b
+            else:
+                s = self.generate_gaussian_noise(patch_emb_output,train_mode)
+                patch_emb_output = patch_emb_output * (1 + self.alpha * s)
+
+            patch_emb_output = torch.cat([cls_token, patch_emb_output], dim = 1)
+            pos_encoded = patch_emb_output + ViT_stat_pos_emb
+
+            position_encoded = self.vit.embeddings.dropout(pos_encoded) # (batch_size, seq_len+1, hidden_size)
+
+            # Continue with the encoder
+            encoder_outputs = self.vit.encoder(position_encoded, return_dict = True)  # It outputs only one item
+            sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state) # (batchsize, seq_len, hidden_size)
+
+            # Use [CLS] token for classification, since it attends to all future tokens
+            cls_token = sequence_output[:, 0]  # (batch_size, hidden_size)
+
+
+        logits = self.classifier(cls_token) # (batch_size, num_out_classes)
+
+        return logits
 
 class ViTWithDecompSequenceGrading(nn.Module):
     def __init__(self,
@@ -608,7 +744,7 @@ class ViTWithDecompSequenceGrading(nn.Module):
 
         return (ViT_stat_pos_emb, patch_emb_output, cls_token)
 
-    def forward(self, pixel_values):
+    def forward(self, pixel_values, train_mode = True):
 
         """
         pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
@@ -688,7 +824,7 @@ class ViTWithStaticPositionalEncoding(nn.Module):
 
         return position_encoded
 
-    def forward(self, pixel_values):
+    def forward(self, pixel_values, train_mode = True):
         """
         pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
         """

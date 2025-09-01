@@ -13,9 +13,10 @@ import os
 from Custom_VIT import (
     ViTWithDecompSequenceGrading,
     ViTWithStaticPositionalEncoding,
-    ViTWithAggPositionalEncoding_PF,
-    ViTWithAggPositionalEncoding_SP,
-    ViTWithAggPositionalEncoding_RandNoise
+    ViTRADAR_SoftDegrade,
+    ViTRADAR_SoftAnchor_v1,
+    ViTRADAR_SoftAnchor_v2,
+    ViTFiLM_RandNoise
       )
 
 from helpers import make_cached_loader, prepare_cached_datasets
@@ -145,7 +146,7 @@ def batch_inference_template(model, data_loader, criterion, device):
 
             # Though using bfloat16 during inference is optional, recommended to speed up inference on GPUs that support it.
             with torch.no_grad(), torch.amp.autocast(dtype = torch.bfloat16, device_type = "cuda"):
-                outputs = model(image_batch)
+                outputs = model(pixel_values = image_batch, train_mode = False)
                 loss = criterion(outputs, label_batch)
                 
                 _, predicted = torch.max(outputs, 1)
@@ -161,7 +162,7 @@ def batch_inference_template(model, data_loader, criterion, device):
 
             with torch.no_grad():
 
-                outputs = model(image_batch)
+                outputs = model(pixel_values = image_batch, train_mode = False)
                 loss = criterion(outputs, label_batch)
                 
                 _, predicted = torch.max(outputs, 1)
@@ -221,11 +222,11 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
 
             with torch.amp.autocast(dtype = torch.bfloat16, device_type = "cuda"):
                 # Forward pass through the model through optimized feature representation
-                outputs = model(image_batch)
+                outputs = model(pixel_values = image_batch, train_mode = True)
         
         # perform regular inference on CPU
         else:
-            outputs = model(image_batch)
+            outputs = model(pixel_values = image_batch, train_mode = True)
 
 
         optimizer.zero_grad()
@@ -352,8 +353,8 @@ def get_model(model_name, model_config):
             alpha = model_config['alpha']
                                             )
     
-    if model_name == 'aggregate_pf':
-        model = ViTWithAggPositionalEncoding_PF(
+    if model_name == 'radar_softdegrade':
+        model = ViTRADAR_SoftDegrade(
             distance_metric=model_config['distance_metric'],
             aggregate_method=model_config['aggregate_method'],
             seq_select_method = model_config['seq_select_method'],
@@ -364,8 +365,8 @@ def get_model(model_name, model_config):
             use_both=model_config['use_both']
         )
 
-    if model_name == 'aggregate_pos_enc_FiLMInj':
-        model = ViTWithAggPositionalEncoding_SP(
+    if model_name == 'radar_softanchor_v1':
+        model = ViTRADAR_SoftAnchor_v1(
             distance_metric=model_config['distance_metric'],
             aggregate_method=model_config['aggregate_method'],
             seq_select_method = model_config['seq_select_method'],
@@ -374,15 +375,31 @@ def get_model(model_name, model_config):
             K = model_config['K'],
             aggregate_dim = model_config['aggregate_dim'],
             norm_type = model_config['norm_type'],
-            return_anchors = model_config['return_anchors']
+            return_anchors = model_config['return_anchors'],
+            perc_ape=model_config['perc_ape']
                                         )
     
-    if model_name == 'aggregate_pos_enc_FiLMInj_random':
+    if model_name == 'radar_softanchor_v2':
+        model = ViTRADAR_SoftAnchor_v2(
+            distance_metric=model_config['distance_metric'],
+            aggregate_method=model_config['aggregate_method'],
+            seq_select_method = model_config['seq_select_method'],
+            num_out_classes = model_config['num_out'],
+            add_coordinates = model_config['add_coordinates'],
+            K = model_config['K'],
+            aggregate_dim = model_config['aggregate_dim'],
+            norm_type = model_config['norm_type'],
+            return_anchors = model_config['return_anchors'],
+            perc_ape=model_config['perc_ape']
+                                        )
+    
+    if model_name == 'radar_softanchor_v1_random':
 
-        model = ViTWithAggPositionalEncoding_RandNoise(
-            num_out_classes=model_config['num_out']
-        )
-
+        model = ViTFiLM_RandNoise(
+            exp_seed=model_config['exp_seed'],
+            num_out_classes=model_config['num_out'],
+            use_both = model_config['use_both']
+                                )
 
     if model_name == 'static':
         
@@ -406,8 +423,8 @@ def get_project_details(yaml_config_file, exp_name):
 
 if __name__ == "__main__":
 
-    yaml_project_name = "aggregate_pos_enc_FiLMInj"
-    log_metrics = True
+    yaml_project_name = "radar_softanchor_v1_random"
+    log_metrics = False
 
     config_details = get_project_details("./configs.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
@@ -417,7 +434,7 @@ if __name__ == "__main__":
                       )
     device = get_device()
 
-    data_paths = prepare_cached_datasets('./data/cache_gpu/')
+    data_paths = prepare_cached_datasets('./data/cache_cpu/')
 
     if log_metrics:
         run_logger = init_wandb(team_name=config_details['team_name'],
@@ -433,7 +450,7 @@ if __name__ == "__main__":
                    num_epochs = config_details['config']['num_epochs'],
                    model = model,
                    device=device,
-                   batch_size = 512,
+                   batch_size = 64,
                    patience=10,
                    min_delta_loss=1e-8,
                    min_epochs=20,

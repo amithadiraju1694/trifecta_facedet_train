@@ -63,7 +63,7 @@ def safe_pow_gate(x, s, *,  # x: (B,N,D), s∈[0,1]: importance per patch
                   tau=2.0, alpha_lo=0.85, alpha_hi=1.15,
                   eps=1e-3, mix=0.3):
     """Goal of this function is to take importance score per sequence for each patch embedding. And then safely apply those improtance scores to:
-        ideally reduce ebeddings power of tokens that has low importance scores and increase power of embeddings that has higher improtance scores.
+        ideally reduce embedding power of tokens that has low importance scores and increase power of embeddings that has higher improtance scores.
         It chooses a safe alpha power and residually mixes original patch embeddings base don improtance scores.
 
         x is 3D: (bs, seqlen, ftrdim)
