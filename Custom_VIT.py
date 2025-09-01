@@ -228,7 +228,7 @@ class DecompSequenceGrading(nn.Module):
         return decomposed_vectors
 
 
-# TODO: All ViTs Needs to be modified, to add dropout at relevant location and to add layernorm after encoder, before classifier.
+# TODO: Excep SP and Static, all are moved
 class ViTWithAggPositionalEncoding_PF(nn.Module):
     def __init__(self,
                  pretrained_model_name="google/vit-base-patch16-224",

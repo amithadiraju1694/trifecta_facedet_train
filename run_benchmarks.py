@@ -130,12 +130,7 @@ def get_device():
 
 def batch_inference_template(model, data_loader, criterion, device):
 
-    """
-    
-    """
-
-    model = model.to(device)
-
+    """ """
     # Test the model
     model.eval()
 
@@ -149,7 +144,7 @@ def batch_inference_template(model, data_loader, criterion, device):
             label_batch = label_batch.to(device,non_blocking = True)
 
             # Though using bfloat16 during inference is optional, recommended to speed up inference on GPUs that support it.
-            with torch.no_grad(), torch.amp.autocast(dtype = torch.bfloat16):
+            with torch.no_grad(), torch.amp.autocast(dtype = torch.bfloat16, device_type = "cuda"):
                 outputs = model(image_batch)
                 loss = criterion(outputs, label_batch)
                 
@@ -224,7 +219,7 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
             image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
             label_batch = label_batch.to(device,non_blocking = True)
 
-            with torch.amp.autocast(dtype = torch.bfloat16):
+            with torch.amp.autocast(dtype = torch.bfloat16, device_type = "cuda"):
                 # Forward pass through the model through optimized feature representation
                 outputs = model(image_batch)
         
@@ -253,9 +248,9 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
 def setup_training(data_paths, num_epochs, model, device,
                    patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7, run_logger = None,local_testing=False):
     
-    train_loader = make_cached_loader(data_paths['train_data'], batch_size=512, shuffle=True, num_workers=4)
-    val_loader = make_cached_loader(data_paths['val_data'], batch_size=512, shuffle=True, num_workers=4)
-    test_loader = make_cached_loader(data_paths['test_data'], batch_size=512, shuffle=False, num_workers=4)
+    train_loader = make_cached_loader(data_paths['train_data'], batch_size=64, shuffle=True, num_workers=4)
+    val_loader = make_cached_loader(data_paths['val_data'], batch_size=64, shuffle=True, num_workers=4)
+    test_loader = make_cached_loader(data_paths['test_data'], batch_size=64, shuffle=False, num_workers=4)
 
     # only include trainable params to optimizer. Need to rebuild or add a new param group if adding new layers later
     params = [p for p in model.parameters() if p.requires_grad]
@@ -335,7 +330,11 @@ def setup_training(data_paths, num_epochs, model, device,
     print(f"Best model in terms of validation loss was at: {checkpoint['epoch']+1} epoch, loading it for testing.")
     model.load_state_dict(checkpoint['model_state'])
     test_loss, test_acc = test_model(model, test_loader, criterion, device)
-    run_logger.log({"test_accuracy": test_acc, "test_loss": test_loss}); run_logger.finish()
+    
+    if not local_testing:
+        run_logger.log({"test_accuracy": test_acc, "test_loss": test_loss}); run_logger.finish()
+    
+    return (test_loss, test_acc)
 
 
 
@@ -417,7 +416,7 @@ if __name__ == "__main__":
                       )
     device = get_device()
 
-    data_paths = prepare_cached_datasets('./data/cache/')
+    data_paths = prepare_cached_datasets('./data/cache_gpu/')
 
     if log_metrics:
         run_logger = init_wandb(team_name=config_details['team_name'],
@@ -429,7 +428,7 @@ if __name__ == "__main__":
         
         run_logger.log_code("./")
 
-    setup_training(data_paths = data_paths,
+    test_loss, test_acc = setup_training(data_paths = data_paths,
                    num_epochs = config_details['config']['num_epochs'],
                    model = model,
                    device=device,
@@ -440,3 +439,5 @@ if __name__ == "__main__":
                    run_logger = run_logger if log_metrics else None,
                    local_testing= not log_metrics)
     
+    print("Test Loss: ", test_loss)
+    print("Test accuracy: ", test_acc)
