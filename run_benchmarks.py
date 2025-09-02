@@ -13,15 +13,18 @@ import os
 from Custom_VIT import (
     ViTWithDecompSequenceGrading,
     ViTWithStaticPositionalEncoding,
-    ViTWithAggPositionalEncoding_PF,
-    ViTWithAggPositionalEncoding_SP,
-    ViTWithAggPositionalEncoding_RandNoise
+    ViTRADAR_SoftDegrade,
+    ViTRADAR_SoftAnchor_v1,
+    ViTRADAR_SoftAnchor_v2,
+    ViTFiLM_RandNoise
       )
 
 from helpers import make_cached_loader, prepare_cached_datasets
+import warnings
+warnings.filterwarnings("ignore")
+os.environ["WANDB_SILENT"] = "true"
 
-#TODO: Though this code beats baseline in all 4 seeds, it has criticul bug in forward pass , making it non-canonical ( identical )
-# to serve as baseline, which carries over to custom approaches as well. Need to fix that bug before publishing.
+#TODO: This branch is to fix bugs in forward pass of Vanilla ViT Baseline
 
 def get_cifar10_loaders(batch_size=128,data_dir='./data'):
 
@@ -128,12 +131,7 @@ def get_device():
 
 def batch_inference_template(model, data_loader, criterion, device):
 
-    """
-    
-    """
-
-    model = model.to(device)
-
+    """ """
     # Test the model
     model.eval()
 
@@ -141,13 +139,14 @@ def batch_inference_template(model, data_loader, criterion, device):
 
     for index, (image_batch, label_batch) in tqdm( enumerate( iter(data_loader) ) , desc="Processing batches", total = len(data_loader)):
 
+        # cast to bfloat16 and perform inference on GPU with channels placed last in memory
         if torch.cuda.is_available():
             image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
             label_batch = label_batch.to(device,non_blocking = True)
 
             # Though using bfloat16 during inference is optional, recommended to speed up inference on GPUs that support it.
-            with torch.no_grad(), torch.cuda.amp.autocast(dtype = torch.bfloat16):
-                outputs = model(image_batch)
+            with torch.no_grad(), torch.amp.autocast(dtype = torch.bfloat16, device_type = "cuda"):
+                outputs = model(pixel_values = image_batch, train_mode = False)
                 loss = criterion(outputs, label_batch)
                 
                 _, predicted = torch.max(outputs, 1)
@@ -156,13 +155,14 @@ def batch_inference_template(model, data_loader, criterion, device):
                 losses.append(loss.item())
                 accuracies.append(accuracy)
 
+        # perform regular inference on CPU
         else:
             image_batch = image_batch.to(device)
             label_batch = label_batch.to(device)
 
             with torch.no_grad():
 
-                outputs = model(image_batch)
+                outputs = model(pixel_values = image_batch, train_mode = False)
                 loss = criterion(outputs, label_batch)
                 
                 _, predicted = torch.max(outputs, 1)
@@ -207,25 +207,26 @@ def validate_model(model, val_loader, CELoss, device):
 def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_model = False, val_loader = None):
     
     batch_losses = [ ]
-    model = model.to(device)
-
     model.train()
 
     for index, (image_batch, label_batch) in tqdm( enumerate( iter(train_loader) ) , total = len(train_loader), desc = "Processing train batches"):
 
-        image_batch = image_batch.to(device)
+        # by default data should be in float32
+        image_batch = image_batch.to(device, dtype = torch.float32)
         label_batch = label_batch.to(device)
 
+        # cast ot bfloat16 and perform inference on GPU with channels placed last in memory
         if torch.cuda.is_available():
             image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
             label_batch = label_batch.to(device,non_blocking = True)
 
-            with torch.cuda.amp.autocast(dtype = torch.bfloat16):
+            with torch.amp.autocast(dtype = torch.bfloat16, device_type = "cuda"):
                 # Forward pass through the model through optimized feature representation
-                outputs = model(image_batch)
+                outputs = model(pixel_values = image_batch, train_mode = True)
         
+        # perform regular inference on CPU
         else:
-            outputs = model(image_batch)
+            outputs = model(pixel_values = image_batch, train_mode = True)
 
 
         optimizer.zero_grad()
@@ -245,20 +246,25 @@ def train_model(model, train_loader, optimizer, scheduler, CELoss, device, val_m
     else: return train_losses
 
 
-def setup_training(data_paths, num_epochs, model, run_logger, device,
-                   patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7):
+def setup_training(data_paths, num_epochs, model, device,
+                   batch_size = 512,
+                   patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7, run_logger = None,local_testing=False):
     
-    train_loader = make_cached_loader(data_paths['train_data'], batch_size=512, shuffle=True, num_workers=4)
-    val_loader = make_cached_loader(data_paths['val_data'], batch_size=512, shuffle=True, num_workers=4)
-    test_loader = make_cached_loader(data_paths['test_data'], batch_size=512, shuffle=False, num_workers=4)
+    train_loader = make_cached_loader(data_paths['train_data'], batch_size=batch_size, shuffle=True, num_workers=4)
+    val_loader = make_cached_loader(data_paths['val_data'], batch_size=batch_size, shuffle=True, num_workers=4)
+    test_loader = make_cached_loader(data_paths['test_data'], batch_size=batch_size, shuffle=False, num_workers=4)
 
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    # only include trainable params to optimizer. Need to rebuild or add a new param group if adding new layers later
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, eta_min=1e-6)
 
     val_accs, val_losses, best_val_loss_sm = [],[], float('inf')
     epochs_no_improve, ckpt_path = 0, 'best_by_valloss.pth'
     
+    # by default model should be in float 32
+    model = model.to(device, dtype = torch.float32)
+
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision('high')
         torch.backends.cudnn.benchmark = True
@@ -302,11 +308,12 @@ def setup_training(data_paths, num_epochs, model, run_logger, device,
                 if (ep + 1) >= min_epochs and epochs_no_improve >= patience:
                     print(f"Early stopping at epoch {ep}."); break
 
-            # Logging train and val metrics to wandb
-            run_logger.log({"train_loss": train_loss,
-                            "val_loss": val_loss,
-                            "val_accuracy": val_acc
-                            })
+            if not local_testing:
+                # Log only in remote experiments, not local
+                run_logger.log({"train_loss": train_loss,
+                                "val_loss": val_loss,
+                                "val_accuracy": val_acc
+                                })
         
         # Logging only train metrics to wandb
         else:
@@ -318,13 +325,18 @@ def setup_training(data_paths, num_epochs, model, run_logger, device,
                                      device,
                                      val_model=False
                                      )
-            run_logger.log({"train_loss": train_loss})
+            # Log only in remote experiments, not local
+            if not local_testing: run_logger.log({"train_loss": train_loss})
 
     checkpoint = torch.load(ckpt_path, map_location=device)
     print(f"Best model in terms of validation loss was at: {checkpoint['epoch']+1} epoch, loading it for testing.")
     model.load_state_dict(checkpoint['model_state'])
     test_loss, test_acc = test_model(model, test_loader, criterion, device)
-    run_logger.log({"test_accuracy": test_acc, "test_loss": test_loss}); run_logger.finish()
+    
+    if not local_testing:
+        run_logger.log({"test_accuracy": test_acc, "test_loss": test_loss}); run_logger.finish()
+    
+    return (test_loss, test_acc)
 
 
 
@@ -341,8 +353,8 @@ def get_model(model_name, model_config):
             alpha = model_config['alpha']
                                             )
     
-    if model_name == 'aggregate_pf':
-        model = ViTWithAggPositionalEncoding_PF(
+    if model_name == 'radar_softdegrade':
+        model = ViTRADAR_SoftDegrade(
             distance_metric=model_config['distance_metric'],
             aggregate_method=model_config['aggregate_method'],
             seq_select_method = model_config['seq_select_method'],
@@ -353,8 +365,8 @@ def get_model(model_name, model_config):
             use_both=model_config['use_both']
         )
 
-    if model_name == 'aggregate_pos_enc_FiLMInj':
-        model = ViTWithAggPositionalEncoding_SP(
+    if model_name == 'radar_softanchor_v1':
+        model = ViTRADAR_SoftAnchor_v1(
             distance_metric=model_config['distance_metric'],
             aggregate_method=model_config['aggregate_method'],
             seq_select_method = model_config['seq_select_method'],
@@ -363,15 +375,31 @@ def get_model(model_name, model_config):
             K = model_config['K'],
             aggregate_dim = model_config['aggregate_dim'],
             norm_type = model_config['norm_type'],
-            return_anchors = model_config['return_anchors']
+            return_anchors = model_config['return_anchors'],
+            perc_ape=model_config['perc_ape']
                                         )
     
-    if model_name == 'aggregate_pos_enc_FiLMInj_random':
+    if model_name == 'radar_softanchor_v2':
+        model = ViTRADAR_SoftAnchor_v2(
+            distance_metric=model_config['distance_metric'],
+            aggregate_method=model_config['aggregate_method'],
+            seq_select_method = model_config['seq_select_method'],
+            num_out_classes = model_config['num_out'],
+            add_coordinates = model_config['add_coordinates'],
+            K = model_config['K'],
+            aggregate_dim = model_config['aggregate_dim'],
+            norm_type = model_config['norm_type'],
+            return_anchors = model_config['return_anchors'],
+            perc_ape=model_config['perc_ape']
+                                        )
+    
+    if model_name == 'radar_softanchor_v1_random':
 
-        model = ViTWithAggPositionalEncoding_RandNoise(
-            num_out_classes=model_config['num_out']
-        )
-
+        model = ViTFiLM_RandNoise(
+            exp_seed=model_config['exp_seed'],
+            num_out_classes=model_config['num_out'],
+            use_both = model_config['use_both']
+                                )
 
     if model_name == 'static':
         
@@ -395,9 +423,10 @@ def get_project_details(yaml_config_file, exp_name):
 
 if __name__ == "__main__":
 
-    yaml_project_name = "aggregate_pos_enc_FiLMInj"
+    yaml_project_name = "radar_softanchor_v2"
+    log_metrics = True
 
-    config_details = get_project_details("./configs.yaml", yaml_project_name)
+    config_details = get_project_details("./configs_ablations.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
     
     model = get_model(model_name = config_details['model_name'],
@@ -405,16 +434,29 @@ if __name__ == "__main__":
                       )
     device = get_device()
 
-    data_paths = prepare_cached_datasets('./data/cache/')
+    data_paths = prepare_cached_datasets('./data/cache_gpu/')
 
-    run_logger = init_wandb(team_name=config_details['team_name'],
-                project_name=config_details['project_name'],
-                run_name = config_details['run_name'] + '_' + str(config_details['config']['system_seed'] ),
-                secret_key=config_details['secret_key'],
-                additional_config = config_details['config']
-                )
-    
-    run_logger.log_code("./")
+    if log_metrics:
+        run_logger = init_wandb(team_name=config_details['team_name'],
+                    project_name=config_details['project_name'],
+                    run_name = config_details['run_name'] + '_' + str(config_details['config']['system_seed'] ),
+                    secret_key=config_details['secret_key'],
+                    additional_config = config_details['config']
+                    )
+        
+        run_logger.log_code("./")
 
+    test_loss, test_acc = setup_training(data_paths = data_paths,
+                   num_epochs = config_details['config']['num_epochs'],
+                   model = model,
+                   device=device,
+                   batch_size = 512 if torch.cuda.is_available() else 64,
+                   patience=5,
+                   min_delta_loss=1e-8,
+                   min_epochs=20,
+                   smooth_k=3,
+                   run_logger = run_logger if log_metrics else None,
+                   local_testing= not log_metrics)
     
-    setup_training(data_paths , config_details['config']['num_epochs'], model, run_logger, device)
+    print("Test Loss: ", test_loss)
+    print("Test accuracy: ", test_acc)
