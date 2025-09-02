@@ -423,10 +423,10 @@ def get_project_details(yaml_config_file, exp_name):
 
 if __name__ == "__main__":
 
-    yaml_project_name = "radar_softanchor_v1_random"
-    log_metrics = False
+    yaml_project_name = "radar_softanchor_v2"
+    log_metrics = True
 
-    config_details = get_project_details("./configs.yaml", yaml_project_name)
+    config_details = get_project_details("./configs_ablations.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
     
     model = get_model(model_name = config_details['model_name'],
@@ -434,7 +434,7 @@ if __name__ == "__main__":
                       )
     device = get_device()
 
-    data_paths = prepare_cached_datasets('./data/cache_cpu/')
+    data_paths = prepare_cached_datasets('./data/cache_gpu/')
 
     if log_metrics:
         run_logger = init_wandb(team_name=config_details['team_name'],
@@ -451,7 +451,7 @@ if __name__ == "__main__":
                    model = model,
                    device=device,
                    batch_size = 512 if torch.cuda.is_available() else 64,
-                   patience=10,
+                   patience=5,
                    min_delta_loss=1e-8,
                    min_epochs=20,
                    smooth_k=3,
