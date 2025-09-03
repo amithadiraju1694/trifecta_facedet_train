@@ -258,16 +258,16 @@ class ViTWithPEG(nn.Module):
                  ):
         super().__init__()
         # backbone without classification head
-        self.backbone = ViTModel.from_pretrained(base_ckpt)
+        self.vit = ViTModel.from_pretrained(base_ckpt)
         self.num_labels = num_labels
         self.perc_ape = perc_ape
 
-        for param in self.backbone.parameters():
+        for param in self.vit.parameters():
             param.requires_grad = False
         
-        self.backbone.eval()
+        self.vit.eval()
         
-        ftr_dim = self.backbone.config.hidden_size
+        ftr_dim = self.vit.config.hidden_size
         self.peg = PEG(ftr_dim, k=3)
 
         self.classifier = nn.Linear(ftr_dim, num_labels)
@@ -316,11 +316,11 @@ class ViTWithPEG(nn.Module):
 
         # No absolute position embeddings in canonical CPVT
         pos_encoded = patch_emb_output + ( self.perc_ape * ViT_stat_pos_emb )  # (bs, seqlen+1, ftrdim)
-        position_encoded = self.backbone.embeddings.dropout(pos_encoded)
+        position_encoded = self.vit.embeddings.dropout(pos_encoded)
 
         # Single encoder (stack of L transformer blocks)
-        encoder_outputs = self.backbone.encoder(position_encoded, return_dict=True)
-        sequence_output = self.backbone.layernorm(encoder_outputs.last_hidden_state)              # final LN
+        encoder_outputs = self.vit.encoder(position_encoded, return_dict=True)
+        sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state)              # final LN
 
         req_token = sequence_output[:, 0]  #(bs, seqlen)
         logits = self.classifier(req_token)  #(bs, num_labels)
@@ -342,9 +342,9 @@ class ViTRADAR_SoftDegrade(nn.Module):
                  aggregate_dim = 2,
                  norm_type = 2,
                  return_anchors = False,
-                 alpha: Union[float, torch.Tensor] = 0.75,
+                 perc_ape = 0.75,
                  num_out_classes = 10,
-                 use_both = False
+                 
                  ):
         super().__init__()
 
@@ -364,9 +364,7 @@ class ViTRADAR_SoftDegrade(nn.Module):
 
         # This is to check how much of custom positional encoding to be added to the original positional encoding
         # This is not a trainable parameter
-        self.alpha = torch.tensor( [alpha] , dtype = torch.float32)
-
-        self.use_both = use_both
+        self.perc_ape = perc_ape
 
         # norm is L2 Norm
         self.custom_pos_encoding = AggregateSequenceGrading(
@@ -427,15 +425,10 @@ class ViTRADAR_SoftDegrade(nn.Module):
         else:
             custom_pos_encodings = self.custom_pos_encoding(patch_emb_output) # (bs, seqlen, ftrdim)
         
-        
         custom_pos_encodings = torch.cat([cls_token, custom_pos_encodings], dim = 1)
         
         # Add both positional encodings
-        if self.use_both:
-            position_encoded = custom_pos_encodings + ViT_stat_pos_emb
-
-        else:
-            position_encoded = custom_pos_encodings + (self.alpha * ViT_stat_pos_emb) # (batch_size, seq_len, hidden_size)
+        position_encoded = custom_pos_encodings + (self.perc_ape * ViT_stat_pos_emb) # (batch_size, seq_len, hidden_size)
         
         position_encoded = self.vit.embeddings.dropout(position_encoded) # (batch_size, seq_len+1, hidden_size)
 

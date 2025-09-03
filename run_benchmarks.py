@@ -17,7 +17,8 @@ from Custom_VIT import (
     ViTRADAR_SoftDegrade,
     ViTRADAR_SoftAnchor_v1,
     ViTRADAR_SoftAnchor_v2,
-    ViTFiLM_RandNoise
+    ViTFiLM_RandNoise,
+    ViTWithPEG
       )
 
 from helpers import make_cached_loader, prepare_cached_datasets
@@ -297,14 +298,14 @@ def setup_training(data_paths, num_epochs, model, device,
     model.load_state_dict(checkpoint['model_state'])
     test_loss, test_acc = test_model(model, test_loader, criterion, device)
     
+    if log_model:
+        log_model_to_wandb(run_logger, ckpt_path)
+
     if not local_testing:
         run_logger.log({"test_accuracy": test_acc, "test_loss": test_loss}); run_logger.finish()
     
-    if log_model:
-        log_model_to_wandb(run_logger, ckpt_path)
-    
-    return (test_loss, test_acc)
 
+    return (test_loss, test_acc)
 
 
 def get_model(model_name, model_config):
@@ -329,7 +330,7 @@ def get_model(model_name, model_config):
             aggregate_dim = model_config['aggregate_dim'],
             norm_type = model_config['norm_type'],
             return_anchors = model_config['return_anchors'],
-            use_both=model_config['use_both']
+            perc_ape = model_config['perc_ape']
         )
 
     if model_name == 'radar_softanchor_v1':
@@ -368,6 +369,12 @@ def get_model(model_name, model_config):
             use_both = model_config['use_both']
                                 )
 
+    if model_name == 'single_peg_cpvt':
+        model = ViTWithPEG(
+            num_labels=model_config['num_out'],
+            perc_ape = model_config['perc_ape']
+        )
+
     if model_name == 'static':
         
         model = ViTWithStaticPositionalEncoding(
@@ -390,8 +397,10 @@ def get_project_details(yaml_config_file, exp_name):
 
 if __name__ == "__main__":
 
+    # This is project name in yaml config file, not the model name in get_model
     yaml_project_name = "radar_softdegrade_notboth"
     log_metrics = True
+    log_model = True
 
     config_details = get_project_details("./configs_ablations.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
@@ -424,7 +433,7 @@ if __name__ == "__main__":
                    smooth_k=3,
                    run_logger = run_logger if log_metrics else None,
                    local_testing= not log_metrics,
-                   log_model = True
+                   log_model = log_model
                    )
     
     print("Test Loss: ", test_loss)
