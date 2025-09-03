@@ -159,13 +159,13 @@ def get_anchor_vectors(seq_select_method: str, vector_values: torch.Tensor, x: t
         anchor_vectors = x[batch_indices, agg_indices, :].unsqueeze(1)  # (batch_size, 1, feature_dim)
 
     elif seq_select_method == 'weighted_sum':
-        anchor_vectors = soft_weighted_sum(weights = vector_values, original_vectors = x, sum_dim = 1) # (batch_size, 1, ftrdim)
+        anchor_vectors = soft_weighted_sum(weights = vector_values, x = x, sum_dim = 1) # (batch_size, 1, ftrdim)
     
     elif seq_select_method == 'loo_weighsum':
 
         # Here at each seqlen index, a weighted sum is computed, leaving ith seqlen outside weighted sum
         # so that it doesnt dilute distances when computed with original patch embeddings.
-        anchor_vectors = loo_weighsum_vector(weights = vector_values, original_vectors = x) # (batch_size, seqlen, ftrdim)
+        anchor_vectors = loo_weighsum_vector(weights = vector_values, x = x) # (batch_size, seqlen, ftrdim)
     
     elif seq_select_method == 'safe_pow_gate':
         # In this case, anchor vectors contain both patch embeddings and importance vector values embeded into one matrix.

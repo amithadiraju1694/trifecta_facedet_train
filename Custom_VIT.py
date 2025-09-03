@@ -3,7 +3,7 @@ torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
 from transformers import ViTModel
 import math
-from typing import Tuple
+from typing import Tuple, Optional, Union
 
 from helpers import (
     get_vector_agg,
@@ -13,7 +13,8 @@ from helpers import (
 
 class AggregateSequenceGrading(nn.Module):
     """
-    Custom positional encoding based on distances from the maximum vector in a sequence.
+    This class aggregates sequences based on various methods and computes distances from the aggregated vector.
+    It can return distances, anchor vectors, and importance weights based on configuration.
     """
 
     def __init__(self,
@@ -111,7 +112,9 @@ class AggregateSequenceGrading(nn.Module):
 
 class DecompSequenceGrading(nn.Module):
     """
-        Custom positional encoding based on Eigen value decomposition of sequences
+        This class implements sequence grading based on various decomposition methods like QR, SVD, Eigen decomposition.
+        It can return transformed sequences based on top-k decomposed vectors and specified strategy.
+        It's currently functional for only Eigen decomposition.
     """
 
     def __init__(self,
