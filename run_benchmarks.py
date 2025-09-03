@@ -151,6 +151,23 @@ def validate_model(model, val_loader, loss_function, device):
     val_loss, val_acc = batch_inference_template(model = model, data_loader = val_loader, criterion = loss_function, device = device)
     return (val_loss, val_acc)
 
+def log_model_to_wandb(run_logger, ckpt_path):
+
+    try:
+        # Create a W&B artifact
+        artifact = wandb.Artifact(name="best_valloss_model_checkpoint", type="model")
+
+        # Add the .pth file to the artifact
+        artifact.add_file(ckpt_path)
+
+        # Log the artifact using the existing run_logger
+        run_logger.log_artifact(artifact)
+    
+    except Exception as e:
+        print(f"Could not log artifact because of this error: {e}")
+    
+    return 
+
 def train_model(model, train_loader, optimizer, scheduler, loss_function, device, val_model = False, val_loader = None):
     
     batch_losses = [ ]
@@ -195,7 +212,7 @@ def train_model(model, train_loader, optimizer, scheduler, loss_function, device
 
 def setup_training(data_paths, num_epochs, model, device,
                    batch_size = 512,
-                   patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7, run_logger = None,local_testing=False):
+                   patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7, run_logger = None,local_testing=False, log_model = False):
     
     train_loader = make_cached_loader(data_paths['train_data'], batch_size=batch_size, shuffle=True, num_workers=4)
     val_loader = make_cached_loader(data_paths['val_data'], batch_size=batch_size, shuffle=True, num_workers=4)
@@ -282,6 +299,9 @@ def setup_training(data_paths, num_epochs, model, device,
     
     if not local_testing:
         run_logger.log({"test_accuracy": test_acc, "test_loss": test_loss}); run_logger.finish()
+    
+    if log_model:
+        log_model_to_wandb(run_logger, ckpt_path)
     
     return (test_loss, test_acc)
 
@@ -370,7 +390,7 @@ def get_project_details(yaml_config_file, exp_name):
 
 if __name__ == "__main__":
 
-    yaml_project_name = "radar_softanchor_v2"
+    yaml_project_name = "radar_softdegrade_notboth"
     log_metrics = True
 
     config_details = get_project_details("./configs_ablations.yaml", yaml_project_name)
@@ -403,7 +423,9 @@ if __name__ == "__main__":
                    min_epochs=20,
                    smooth_k=3,
                    run_logger = run_logger if log_metrics else None,
-                   local_testing= not log_metrics)
+                   local_testing= not log_metrics,
+                   log_model = True
+                   )
     
     print("Test Loss: ", test_loss)
     print("Test accuracy: ", test_acc)
