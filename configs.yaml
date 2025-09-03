@@ -9,8 +9,8 @@ radar_softdegrade_notboth:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    use_both: False    
-    num_epochs: 8
+    perc_ape: 1.0    
+    num_epochs: 1
     system_seed: 108
 
   model_name: radar_softdegrade
@@ -29,7 +29,7 @@ radar_softdegrade_use_both:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    use_both: True    
+    perc_ape: 1.0    
     num_epochs: 8
     system_seed: 12345
 
@@ -134,5 +134,17 @@ static_pos_enc:
   project_name: ViT_RADAR_benchmarks
   run_name: BaselineViT
   secret_key: 
-  
+
+single_peg_cpvt:
+  config:
+    num_out: 10
+    perc_ape: 1.0
+    num_epochs: 2
+    system_seed: 108
+
+  model_name: single_peg_cpvt
+  team_name: amith-adiraju-self
+  project_name: 
+  run_name: 
+  secret_key:
   
