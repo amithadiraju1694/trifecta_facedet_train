@@ -31,13 +31,13 @@ radar_softdegrade_use_both:
     norm_type: 2
     return_anchors: True
     perc_ape: 1.0    
-    num_epochs: 1
-    system_seed: 12345
+    num_epochs: 60
+    system_seed: 580316
 
   model_name: radar_softdegrade
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_Ablations
-  run_name: aggr_safepowgate_B_nonFiLM
+  run_name: Powergate_nonFiLM_APE
   secret_key: 
 
 
@@ -52,7 +52,7 @@ radar_softanchor_v1:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 1.0
+    perc_ape: 0.0
     num_epochs: 60
     num_out: 10
     system_seed: 580316
@@ -60,7 +60,7 @@ radar_softanchor_v1:
   model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_Ablations
-  run_name: SoftAnchor_v1_ViT
+  run_name: SoftAnchor_v1_ViT_NoAPE
   secret_key: 
 
 
@@ -114,25 +114,27 @@ radar_softanchor_v1_random:
     exp_seed: 108
     num_out: 10
     use_both: True
-    num_epochs: 8
-    system_seed: 108
+    perc_ape: 1.0
+    num_epochs: 60
+    system_seed: 580316
 
   model_name: radar_softanchor_v1_random
   team_name: amith-adiraju-self
-  project_name: 
-  run_name: 
-  secret_key:
+  project_name: ViT_RADAR_Ablations
+  run_name: SoftAnchor_v1_GaussianFiLM
+  secret_key: 
   
   
 single_peg_cpvt:
   config:
     num_out: 10
-    perc_ape: 1.0
-    num_epochs: 2
+    perc_ape: 0.0
+    k: 27
+    num_epochs: 60
     system_seed: 108
 
   model_name: single_peg_cpvt
   team_name: amith-adiraju-self
-  project_name: 
-  run_name: 
-  secret_key:
+  project_name: ViT_RADAR_Ablations
+  run_name: SinglePEG_NoAPE
+  secret_key: 

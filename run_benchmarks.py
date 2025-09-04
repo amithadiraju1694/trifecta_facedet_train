@@ -26,7 +26,6 @@ import warnings
 warnings.filterwarnings("ignore")
 os.environ["WANDB_SILENT"] = "true"
 
-#TODO: This branch is to create documentation for all functions and optionally log wandb model into runs
 
 def init_wandb(team_name: str, project_name: str, run_name:str, secret_key:str, additional_config: dict = None):
 
@@ -366,13 +365,15 @@ def get_model(model_name, model_config):
         model = ViTFiLM_RandNoise(
             exp_seed=model_config['exp_seed'],
             num_out_classes=model_config['num_out'],
-            use_both = model_config['use_both']
+            use_both = model_config['use_both'],
+            perc_ape = model_config['perc_ape']
                                 )
 
     if model_name == 'single_peg_cpvt':
         model = ViTWithPEG(
             num_labels=model_config['num_out'],
-            perc_ape = model_config['perc_ape']
+            perc_ape = model_config['perc_ape'],
+            k = model_config['k']
         )
 
     if model_name == 'static':
@@ -398,9 +399,9 @@ def get_project_details(yaml_config_file, exp_name):
 if __name__ == "__main__":
 
     # This is project name in yaml config file, not the model name in get_model
-    yaml_project_name = "radar_softdegrade_notboth"
+    yaml_project_name = "single_peg_cpvt"
     log_metrics = True
-    log_model = True
+    log_model = False
 
     config_details = get_project_details("./configs_ablations.yaml", yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])

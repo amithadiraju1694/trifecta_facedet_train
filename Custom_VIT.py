@@ -232,7 +232,7 @@ class DecompSequenceGrading(nn.Module):
 
 
 class PEG(nn.Module):
-    """Position Encoding Generator (CPVT): depth-wise 3x3 conv on patch grid."""
+    """Position Encoding Generator (CPVT): depth-wise kxk conv on patch grid."""
     def __init__(self, dim, k=3):
         super().__init__()
         pad = k // 2
@@ -254,13 +254,15 @@ class ViTWithPEG(nn.Module):
     def __init__(self,
                  base_ckpt="google/vit-base-patch16-224",
                  num_labels=10,
-                 perc_ape: float = 1.0
+                 perc_ape: float = 1.0,
+                 k: int = 3
                  ):
         super().__init__()
         # backbone without classification head
         self.vit = ViTModel.from_pretrained(base_ckpt)
         self.num_labels = num_labels
         self.perc_ape = perc_ape
+        self.k = k
 
         for param in self.vit.parameters():
             param.requires_grad = False
@@ -268,7 +270,7 @@ class ViTWithPEG(nn.Module):
         self.vit.eval()
         
         ftr_dim = self.vit.config.hidden_size
-        self.peg = PEG(ftr_dim, k=3)
+        self.peg = PEG(ftr_dim, k=self.k)
 
         self.classifier = nn.Linear(ftr_dim, num_labels)
     
@@ -311,6 +313,7 @@ class ViTWithPEG(nn.Module):
         assert H*W == seqlen, "Non-square or unexpected grid; compute H,W from image/patch sizes."
 
         # When PEG is used, patch embeddings themselves contain positional + patch information. So, can take this as-is.
+        # This Pos_idx-1 PEG variant, where injection is before any transformer layer, without multple PEG blocks. "Canonical Remedy"
         patch_emb_output = self.peg(x=patch_emb_output, H=H, W=W)  # (bs, seqlen, ftrdim)
         patch_emb_output = torch.cat([cls_token, patch_emb_output], dim=1) # (bs,seqlen+1,ftrdim)
 
@@ -739,7 +742,8 @@ class ViTFiLM_RandNoise(nn.Module):
                  exp_seed,
                  pretrained_model_name="google/vit-base-patch16-224",
                  num_out_classes = 10,
-                 use_both = False
+                 use_both = False,
+                 perc_ape = 1.0
                  ):
         super().__init__()
 
@@ -747,6 +751,7 @@ class ViTFiLM_RandNoise(nn.Module):
         self.vit = ViTModel.from_pretrained(pretrained_model_name)
         self.use_both = use_both
         self.num_out_classes = num_out_classes
+        self.perc_ape = perc_ape
         
         # Ensuring ViT layers are frozen
         for param in self.vit.parameters():
@@ -829,6 +834,7 @@ class ViTFiLM_RandNoise(nn.Module):
             # patch_emb_out - > (batch_size, seq_len, hidden_size)
             ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
 
+            # Whether to use both S and B vectors for patch embedding modulation
             if self.use_both:
                 s,b = self.generate_gaussian_noise( patch_emb_output,train_mode)
                 patch_emb_output = patch_emb_output * (1 + self.alpha * s) + self.gamma * b
@@ -837,7 +843,7 @@ class ViTFiLM_RandNoise(nn.Module):
                 patch_emb_output = patch_emb_output * (1 + self.alpha * s)
 
             patch_emb_output = torch.cat([cls_token, patch_emb_output], dim = 1)
-            pos_encoded = patch_emb_output + ViT_stat_pos_emb
+            pos_encoded = patch_emb_output + ( self.perc_ape * ViT_stat_pos_emb )
 
             position_encoded = self.vit.embeddings.dropout(pos_encoded) # (batch_size, seq_len+1, hidden_size)
 
