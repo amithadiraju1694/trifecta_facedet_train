@@ -4,6 +4,7 @@ from torchvision.transforms import v2 as transforms
 from torchvision import datasets
 from typing import Optional, Tuple, Union
 import os
+from helpers_profiling import *
 
 
 def entropy_vec(x: torch.Tensor, req_dim: int = 2) -> torch.Tensor:
@@ -446,6 +447,62 @@ def save_cached_split(ds, path: str, batch_size: int=512, num_workers: int=8, dt
     X = torch.cat(Xs); Y = torch.cat(Ys)
     torch.save({"images": X, "labels": Y}, path)
 
+def split_pt_file_stratified(src_path,
+                             split1_path="validation_ablations.pt",
+                             split2_path="test_ablations.pt",
+                             split1_frac=0.7,
+                             seed=108,
+                             save_both_splits = True
+                             ):
+    
+    """ Splits a single tensor file into two tensor files and writes them to disk as tensors.
+    It assumes that single tensor file contains features and labels with anmes "images", "labels".
+
+    Useful for splitting validation set of original experiment into val and test for ablations only.
+    """
+
+    d = torch.load(src_path, map_location="cpu")
+
+    X, Y = d["images"], d["labels"]
+    assert X.shape[0] == Y.shape[0], "Mismatched X/Y lengths"
+    g = torch.Generator().manual_seed(seed)
+
+    split1_idx, split2_idx = [], []
+    # Stratified, balanced sampling
+    for c in torch.unique(Y).tolist():
+        
+        idx = torch.where(Y == c)[0]
+        perm = idx[torch.randperm(idx.numel(), generator=g)]
+
+        n_val = max(1, min(idx.numel() - 1, int(idx.numel() * split1_frac)))
+        
+        split1_idx.append(perm[:n_val])
+        split2_idx.append(perm[n_val:])
+
+    split1_idx = torch.cat(split1_idx)
+    split2_idx = torch.cat(split2_idx)
+
+    # optional: shuffle within splits
+    split1_idx = split1_idx[torch.randperm(split1_idx.numel(), generator=g)]
+    split2_idx = split2_idx[torch.randperm(split2_idx.numel(), generator=g)]
+
+    split1 = {"images": X[split1_idx].contiguous(), "labels": Y[split1_idx].contiguous()}
+    
+
+    device_dtype = torch.float32
+    if torch.cuda.is_available():
+        device_dtype = torch.float16
+
+    save_cached_split(split1, split1_path, dtype=device_dtype)
+    print("Written Split 1 dataset ")
+    
+
+    if save_both_splits:
+        split2 = {"images": X[split2_idx].contiguous(), "labels": Y[split2_idx].contiguous()}
+        save_cached_split(split2,   split2_path, dtype = device_dtype)
+        print("Written Split 2 dataset ")
+
+
 def make_cached_loader(path: str, batch_size: int=512, shuffle: bool =True, num_workers:int =8):
 
     """Function that loads pre-cached tensor data from specified path and returns a dataloader."""
@@ -512,3 +569,43 @@ def prepare_cached_datasets(cached_data_path: str) -> dict:
 
     data_paths = {'train_data': cached_data_path + "train.pt", 'val_data': cached_data_path + "val.pt", 'test_data': cached_data_path + "test.pt"}
     return data_paths
+
+
+def profile_models(model, example_input, total_tr_rows, batch_size, num_epochs):
+
+    """
+    Function is a helper to compute FLOPs and Trainable parameters for overall and by-module of a model.
+    """
+    
+    imp_modules = ['classifier', 'custom_pos_encoding', 'projection_phi', 'peg']
+    imp_flop_metrics = ['forward_total_per_sample', 'forward_trainable_per_sample','train_per_sample',
+                        'forward_per_step','train_per_step','train_per_epoch',
+                        'train_full', 'num_train_samples','batch_size',
+                        'num_epochs']
+
+    profile_metrics = {}
+
+    all_ops_model = get_all_inline_ops(model, example_input)
+    dict_flops_model = flops_breakdown(model, example_input, all_ops_model, total_tr_rows, batch_size, num_epochs)
+    flops_by_mod = dict_flops_model['by_module']
+
+    # Extract FLOPS by module from flops breakdown
+    for module_name in imp_modules:
+        if module_name in flops_by_mod:
+            profile_metrics[module_name] = flops_by_mod[module_name]
+
+    
+    # Extract other metrics from flops breakdown
+    for module_name in imp_flop_metrics:
+        if module_name in dict_flops_model:
+            profile_metrics[module_name] = dict_flops_model[module_name]
+    
+    # compute and extract trainable other metrics from model
+    # int, float, dict
+    total_tr_params, total_tr_params_mb, tr_params_by_mod = count_parameters(model)
+    
+    profile_metrics['total_trainable_params'] = total_tr_params
+    profile_metrics['total_trainable_params_mb'] = total_tr_params_mb
+    profile_metrics['trainable_params_by_mod'] = tr_params_by_mod
+
+    return profile_metrics
