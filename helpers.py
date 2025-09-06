@@ -461,7 +461,7 @@ def split_pt_file_stratified(src_path,
     Useful for splitting validation set of original experiment into val and test for ablations only.
     """
 
-    d = torch.load(src_path, map_location="cpu")
+    d = torch.load(src_path, map_location= "cpu")
 
     X, Y = d["images"], d["labels"]
     assert X.shape[0] == Y.shape[0], "Mismatched X/Y lengths"
@@ -487,19 +487,22 @@ def split_pt_file_stratified(src_path,
     split2_idx = split2_idx[torch.randperm(split2_idx.numel(), generator=g)]
 
     split1 = {"images": X[split1_idx].contiguous(), "labels": Y[split1_idx].contiguous()}
+    split1_dataset = TensorDataset(split1["images"], split1["labels"])
     
 
     device_dtype = torch.float32
     if torch.cuda.is_available():
         device_dtype = torch.float16
 
-    save_cached_split(split1, split1_path, dtype=device_dtype)
+    save_cached_split(split1_dataset, split1_path, dtype=device_dtype)
     print("Written Split 1 dataset ")
     
 
     if save_both_splits:
         split2 = {"images": X[split2_idx].contiguous(), "labels": Y[split2_idx].contiguous()}
-        save_cached_split(split2,   split2_path, dtype = device_dtype)
+        split2_dataset = TensorDataset(split2["images"], split2["labels"])
+        
+        save_cached_split(split2_dataset,   split2_path, dtype = device_dtype)
         print("Written Split 2 dataset ")
 
 
