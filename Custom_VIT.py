@@ -23,7 +23,8 @@ class AggregateSequenceGrading(nn.Module):
                  seq_select_method = 'weighted_sum',
                  aggregate_dim = 2,
                  norm_type = None,
-                 return_anchors = True
+                 return_anchors = True,
+                 corrupt_imp_weights: bool = False
                  ):
         """
         Initialize the custom positional encoding module.
@@ -45,6 +46,7 @@ class AggregateSequenceGrading(nn.Module):
         self.aggregate_dim = aggregate_dim
         self.norm_type = norm_type
         self.return_anchors = return_anchors
+        self.corrupt_imp_weights = corrupt_imp_weights
 
     def forward(self, x):
         """
@@ -64,7 +66,10 @@ class AggregateSequenceGrading(nn.Module):
         vector_values = get_vector_agg(aggregate_method=self.aggregate_method,
                        x=x,
                        req_dim = self.aggregate_dim,
-                       norm_type = self.norm_type) # (batch_size, seq_len)
+                       norm_type = self.norm_type,
+                       smooth_topk=self.corrupt_imp_weights,
+                       topk_val= 11 if self.corrupt_imp_weights else None
+                       ) # (batch_size, seq_len)
         
         # Single anchor or group of anchors with soft selection
         # These anchor vectors are weighted by importance weights computed above with orginal patch embeddings
@@ -346,8 +351,8 @@ class ViTRADAR_SoftDegrade(nn.Module):
                  norm_type = 2,
                  return_anchors = False,
                  perc_ape = 0.75,
+                 corrupt_imp_weights=False,
                  num_out_classes = 10,
-                 
                  ):
         super().__init__()
 
@@ -364,6 +369,7 @@ class ViTRADAR_SoftDegrade(nn.Module):
         self.aggregate_dim=aggregate_dim
         self.norm_type = norm_type,
         self.return_anchors = return_anchors
+        self.corrupt_imp_weights=corrupt_imp_weights
 
         # This is to check how much of custom positional encoding to be added to the original positional encoding
         # This is not a trainable parameter
@@ -376,7 +382,8 @@ class ViTRADAR_SoftDegrade(nn.Module):
             seq_select_method = self.seq_select_method,
             aggregate_dim = self.aggregate_dim,
             norm_type = self.norm_type,
-            return_anchors = self.return_anchors
+            return_anchors = self.return_anchors,
+            corrupt_imp_weights = self.corrupt_imp_weights
         )
 
         # Classifier layer for the output
@@ -409,7 +416,6 @@ class ViTRADAR_SoftDegrade(nn.Module):
         ViT_stat_pos_emb = self.vit.embeddings.position_embeddings  # (1, seq_len+1, hidden_size)
 
         return (ViT_stat_pos_emb, patch_emb_output, cls_token)
-
 
     def forward(self, pixel_values: torch.Tensor, train_mode:bool = True):
 
@@ -463,7 +469,8 @@ class ViTRADAR_SoftAnchor_v1(nn.Module):
                  aggregate_dim = 2,
                  norm_type = 2,
                  return_anchors = True,
-                 perc_ape: float = 0.5
+                 perc_ape: float = 0.5,
+                 corrupt_imp_weights: bool = False
                  ):
         super().__init__()
 
@@ -486,6 +493,7 @@ class ViTRADAR_SoftAnchor_v1(nn.Module):
         self.return_anchors = return_anchors
         self.add_coordinates = add_coordinates # Whether to get co-ordinates output when dealing with phi vector computation
         self.perc_ape = perc_ape # Percentage of Absolute Positional Encoding to be used in Forward pass
+        self.corrupt_imp_weights = corrupt_imp_weights
 
         # These are learnable params that govern how much % of s,b will be added to patch embeddings before sending to encoder.
         self.alpha = nn.Parameter(torch.tensor(0.1, dtype = torch.float32))  # Trainable scalar parameter
@@ -498,7 +506,8 @@ class ViTRADAR_SoftAnchor_v1(nn.Module):
             seq_select_method = self.seq_select_method,
             aggregate_dim=self.aggregate_dim,
             norm_type=self.norm_type,
-            return_anchors=self.return_anchors
+            return_anchors=self.return_anchors,
+            corrupt_imp_weights = self.corrupt_imp_weights
         )
 
         # Computing output dimensions of Phi features
@@ -611,7 +620,8 @@ class ViTRADAR_SoftAnchor_v2(nn.Module):
                  aggregate_dim = 2,
                  norm_type = 2,
                  return_anchors = True,
-                 perc_ape: float = 0.5
+                 perc_ape: float = 0.5,
+                 corrupt_imp_weights=False
                  ):
         super().__init__()
 
@@ -634,6 +644,7 @@ class ViTRADAR_SoftAnchor_v2(nn.Module):
         self.return_anchors = return_anchors
         self.add_coordinates = add_coordinates # Whether to get co-ordinates output when dealing with phi vector computation
         self.perc_ape = perc_ape # Percentage of Absolute Positional Encoding to be used in Forward pass
+        self.corrupt_imp_weights = corrupt_imp_weights
 
         # These are learnable params that govern how much % of s,b will be added to patch embeddings before sending to encoder.
         self.alpha = nn.Parameter(torch.tensor(0.1, dtype = torch.float32))  # Trainable scalar parameter
@@ -645,7 +656,8 @@ class ViTRADAR_SoftAnchor_v2(nn.Module):
             seq_select_method = self.seq_select_method,
             aggregate_dim=self.aggregate_dim,
             norm_type=self.norm_type,
-            return_anchors=self.return_anchors
+            return_anchors=self.return_anchors,
+            corrupt_imp_weights = self.corrupt_imp_weights
         )
 
         # Computing output dimensions of Phi features

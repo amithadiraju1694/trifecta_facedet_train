@@ -34,7 +34,7 @@ def entropy_vec(x: torch.Tensor, req_dim: int = 2) -> torch.Tensor:
     return vector_values # (bs, seqlen)
 
 
-def get_vector_agg(aggregate_method: str, x: torch.Tensor, req_dim: int, norm_type = None) -> torch.Tensor:
+def get_vector_agg(aggregate_method: str, x: torch.Tensor, req_dim: int, norm_type = None, smooth_topk = False, topk_val = None) -> torch.Tensor:
 
     """
     Function that computes some aggregate of a tensor 'x' using different methods (norm, sum, max_elem, entropy) 
@@ -78,6 +78,18 @@ def get_vector_agg(aggregate_method: str, x: torch.Tensor, req_dim: int, norm_ty
     
     else:
         raise ValueError(f"Aggregate method: {aggregate_method} is not supported. Please provide one of : 'norm', 'sum' , 'max_elem','entropy")
+
+    if smooth_topk:
+        print("WARNING: Smoothing top-k values in aggregate vector, ensure this is not training phase.")
+        if topk_val is None:
+            raise ValueError("topk_val must be provided if smooth_topk is True.")
+        
+        alpha = 0.8 # Higher alpha would favor lowering the effect of topk values aggressively
+        
+        # Smooth top-k by zeroing out all but top-k values, then re-normalizing
+        with torch.no_grad():
+            idx = vector_values.topk(topk_val).indices
+            vector_values[idx] = (1-alpha) * vector_values[idx] + alpha * ( vector_values[idx]  / topk_val )
 
     return vector_values
 

@@ -330,7 +330,8 @@ def get_model(model_name, model_config):
             aggregate_dim = model_config['aggregate_dim'],
             norm_type = model_config['norm_type'],
             return_anchors = model_config['return_anchors'],
-            perc_ape = model_config['perc_ape']
+            perc_ape = model_config['perc_ape'],
+            corrupt_imp_weights=model_config['corrupt_imp_weights']
         )
 
     if model_name == 'radar_softanchor_v1':
@@ -344,7 +345,8 @@ def get_model(model_name, model_config):
             aggregate_dim = model_config['aggregate_dim'],
             norm_type = model_config['norm_type'],
             return_anchors = model_config['return_anchors'],
-            perc_ape=model_config['perc_ape']
+            perc_ape=model_config['perc_ape'],
+            corrupt_imp_weights=model_config['corrupt_imp_weights']
                                         )
     
     if model_name == 'radar_softanchor_v2':
@@ -358,7 +360,8 @@ def get_model(model_name, model_config):
             aggregate_dim = model_config['aggregate_dim'],
             norm_type = model_config['norm_type'],
             return_anchors = model_config['return_anchors'],
-            perc_ape=model_config['perc_ape']
+            perc_ape=model_config['perc_ape'],
+            corrupt_imp_weights=model_config['corrupt_imp_weights']
                                         )
     
     if model_name == 'radar_softanchor_v1_random':

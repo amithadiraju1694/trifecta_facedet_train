@@ -10,7 +10,8 @@ radar_softdegrade_notboth:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 1.0    
+    perc_ape: 1.0
+    corrupt_imp_weights: False
     num_epochs: 1
     system_seed: 108
 
@@ -30,7 +31,8 @@ radar_softdegrade_use_both:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 1.0    
+    perc_ape: 1.0
+    corrupt_imp_weights: False
     num_epochs: 60
     system_seed: 580316
 
@@ -53,6 +55,7 @@ radar_softanchor_v1:
     norm_type: 2
     return_anchors: True
     perc_ape: 0.0
+    corrupt_imp_weights: False
     num_epochs: 60
     num_out: 10
     system_seed: 580316
@@ -76,6 +79,7 @@ radar_softanchor_v2:
     norm_type: 2
     return_anchors: True
     perc_ape: 1.0
+    corrupt_imp_weights: False
     num_epochs: 60
     num_out: 10
     system_seed: 580316
@@ -99,6 +103,7 @@ radar_softanchor_loo:
     norm_type: 2
     return_anchors: True
     perc_ape: 1.0
+    corrupt_imp_weights: False
     num_epochs: 8
     num_out: 10
     system_seed: 12345
