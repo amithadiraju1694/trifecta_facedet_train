@@ -84,12 +84,12 @@ def get_vector_agg(aggregate_method: str, x: torch.Tensor, req_dim: int, norm_ty
         if topk_val is None:
             raise ValueError("topk_val must be provided if smooth_topk is True.")
         
-        alpha = 0.8 # Higher alpha would favor lowering the effect of topk values aggressively
+        alpha = 1.0 # Higher alpha would favor lowering the effect of topk values aggressively
         
         # Smooth top-k by zeroing out all but top-k values, then re-normalizing
         with torch.no_grad():
-            idx = vector_values.topk(topk_val).indices
-            vector_values[idx] = (1-alpha) * vector_values[idx] + alpha * ( vector_values[idx]  / topk_val )
+            idx = vector_values.topk(topk_val, dim = -1, largest = True).indices
+            vector_values[:, idx] = (1-alpha) * vector_values[:, idx] + alpha * ( vector_values[:, idx]  / topk_val )
 
     return vector_values
 

@@ -68,7 +68,7 @@ class AggregateSequenceGrading(nn.Module):
                        req_dim = self.aggregate_dim,
                        norm_type = self.norm_type,
                        smooth_topk=self.corrupt_imp_weights,
-                       topk_val= 11 if self.corrupt_imp_weights else None
+                       topk_val= 98 if self.corrupt_imp_weights else None
                        ) # (batch_size, seq_len)
         
         # Single anchor or group of anchors with soft selection
@@ -367,7 +367,7 @@ class ViTRADAR_SoftDegrade(nn.Module):
         self.aggregate_method = aggregate_method
         self.seq_select_method= seq_select_method
         self.aggregate_dim=aggregate_dim
-        self.norm_type = norm_type,
+        self.norm_type = norm_type
         self.return_anchors = return_anchors
         self.corrupt_imp_weights=corrupt_imp_weights
 
@@ -780,7 +780,8 @@ class ViTFiLM_RandNoise(nn.Module):
             self.noise_std_b = 1.0
 
         # Using generator for seeding manually, so that random noise are reproducible across runs
-        self.generator = torch.Generator(device='cpu' if torch.cuda.is_available() == False else 'cuda').manual_seed(exp_seed)
+        set_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.generator = torch.Generator(device = set_device).manual_seed(exp_seed)
 
         # Classifier layer for the output
         self.classifier = nn.Linear(self.vit.config.hidden_size,
