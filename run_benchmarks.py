@@ -13,12 +13,9 @@ from typing import Tuple
 
 
 from Custom_VIT import (
-    ViTWithDecompSequenceGrading,
     ViTWithStaticPositionalEncoding,
     ViTRADAR_SoftDegrade,
     ViTRADAR_SoftAnchor_v1,
-    ViTRADAR_SoftAnchor_v2,
-    ViTFiLM_RandNoise,
     ViTWithPEG
       )
 
@@ -309,17 +306,6 @@ def setup_training(data_paths, num_epochs, model, device,
 
 
 def get_model(model_name, model_config):
-
-    if model_name == 'decomp':
-        
-        model = ViTWithDecompSequenceGrading(
-            pretrained_model_name="google/vit-base-patch16-224",
-            decomp_algo=model_config['algo'],  # or qr or svd
-            decomp_strategy=model_config['strategy'],  # project or importance
-            top_k_seqfeat = model_config["top_k_seqfeat"],
-            num_out_classes=model_config['num_out'],
-            alpha = model_config['alpha']
-                                            )
     
     if model_name == 'radar_softdegrade':
         model = ViTRADAR_SoftDegrade(
@@ -349,30 +335,6 @@ def get_model(model_name, model_config):
             corrupt_imp_weights=model_config['corrupt_imp_weights']
                                         )
     
-    if model_name == 'radar_softanchor_v2':
-        model = ViTRADAR_SoftAnchor_v2(
-            distance_metric=model_config['distance_metric'],
-            aggregate_method=model_config['aggregate_method'],
-            seq_select_method = model_config['seq_select_method'],
-            num_out_classes = model_config['num_out'],
-            add_coordinates = model_config['add_coordinates'],
-            K = model_config['K'],
-            aggregate_dim = model_config['aggregate_dim'],
-            norm_type = model_config['norm_type'],
-            return_anchors = model_config['return_anchors'],
-            perc_ape=model_config['perc_ape'],
-            corrupt_imp_weights=model_config['corrupt_imp_weights']
-                                        )
-    
-    if model_name == 'radar_softanchor_v1_random':
-
-        model = ViTFiLM_RandNoise(
-            exp_seed=model_config['exp_seed'],
-            num_out_classes=model_config['num_out'],
-            use_both = model_config['use_both'],
-            perc_ape = model_config['perc_ape']
-                                )
-
     if model_name == 'single_peg_cpvt':
         model = ViTWithPEG(
             num_labels=model_config['num_out'],
@@ -403,20 +365,14 @@ def get_project_details(yaml_config_file, exp_name):
 if __name__ == "__main__":
 
     # This is project name in yaml config file, not the model name in get_model
-    yaml_project_name = "single_peg_cpvt"; log_metrics = True; log_model = False; ablations = True
+    yaml_project_name = "single_peg_cpvt"; log_metrics = True; log_model = True
+    
     configs_path = "./configs_train.yaml"
     data_paths = {"train_data": "./data/cifar10_train_cachegpu/train.pt",
                   "val_data" : "./data/cifar10_train_cachegpu/val.pt",
                   "test_data" : "./data/cifar10_train_cachegpu/test.pt" 
                   }
     
-    if ablations:
-        configs_path = "./configs_ablations.yaml"
-        data_paths = {"train_data": "./data/cifar10_ablations_cachegpu/train_ablations.pt",
-                      "val_data" : "./data/cifar10_ablations_cachegpu/val_ablations.pt",
-                      "test_data" : "./data/cifar10_ablations_cachegpu/test_ablations.pt" 
-                      }
-
     config_details = get_project_details(configs_path, yaml_project_name)
     set_system_seed(config_details['config']['system_seed'])
     
@@ -440,7 +396,7 @@ if __name__ == "__main__":
         model_profile_dict = profile_models(
                                                 model = model,
                                                 example_input = torch.rand((1,3,224,224)),
-                                                total_tr_rows = 18000 if ablations else 35000,
+                                                total_tr_rows = 35000,
                                                 batch_size = 512 if torch.cuda.is_available() else 64,
                                                 num_epochs = config_details['config']['num_epochs']
                                             )
@@ -453,7 +409,7 @@ if __name__ == "__main__":
                    model = model,
                    device=device,
                    batch_size = 512 if torch.cuda.is_available() else 64,
-                   patience=5 if ablations else 10,
+                   patience=10,
                    min_delta_loss=1e-8,
                    min_epochs=20,
                    smooth_k=3,

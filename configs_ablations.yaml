@@ -115,19 +115,16 @@ radar_loosav1_alignment:
   run_name: LOOSAV1_NOAPE_Align
   secret_key: 
 
-
 single_peg_cpvt:
   config:
     num_out: 10
-    perc_ape: 0.0
+    perc_ape: 1.0
     k: 27
-    num_epochs: 60
-    alignment_mode: False
-    necessity_mode: False
+    num_epochs: 300
     system_seed: 108
 
   model_name: single_peg_cpvt
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations
-  run_name: SinglePEG_NoAPE
+  project_name: ViT_RADAR_benchmarks
+  run_name: SinglePEG_APE
   secret_key: 
