@@ -1,7 +1,4 @@
-
-
-radar_softdegrade_notboth:
-
+pfim_alignment:
   config:
     distance_metric: NA
     aggregate_method: entropy
@@ -10,19 +7,20 @@ radar_softdegrade_notboth:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 1.0
+    perc_ape: 0.0
     corrupt_imp_weights: False
-    num_epochs: 1
+    num_epochs: 60
+    alignment_mode: True
+    necessity_mode: False
     system_seed: 108
 
   model_name: radar_softdegrade
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_Ablations
-  run_name: testing_logging
-  secret_key:
+  run_name: PFIM_Entropy_NOAPE_Align
+  secret_key: 
 
-radar_softdegrade_use_both:
-
+pfim_necessity:
   config:
     distance_metric: NA
     aggregate_method: entropy
@@ -31,20 +29,20 @@ radar_softdegrade_use_both:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 1.0
+    perc_ape: 0.0
     corrupt_imp_weights: False
     num_epochs: 60
-    system_seed: 580316
+    alignment_mode: False
+    necessity_mode: True
+    system_seed: 108
 
   model_name: radar_softdegrade
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_Ablations
-  run_name: Powergate_nonFiLM_APE
-  secret_key: 
+  run_name: PFIM_Entropy_NOAPE_Necs
+  secret_key:
 
-
-radar_softanchor_v1:
-
+radar_ssav1_alignment:
   config:
     aggregate_method: norm_softmax
     distance_metric: NA
@@ -58,17 +56,18 @@ radar_softanchor_v1:
     corrupt_imp_weights: False
     num_epochs: 60
     num_out: 10
-    system_seed: 580316
+    alignment_mode: True
+    necessity_mode: False
+    system_seed: 108
 
   model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_Ablations
-  run_name: SoftAnchor_v1_ViT_NoAPE
+  run_name: SSAV1_NOAPE_Align
   secret_key: 
 
 
-radar_softanchor_v2:
-
+radar_ssav1_necessity:
   config:
     aggregate_method: norm_softmax
     distance_metric: NA
@@ -78,23 +77,23 @@ radar_softanchor_v2:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 1.0
+    perc_ape: 0.0
     corrupt_imp_weights: False
     num_epochs: 60
     num_out: 10
-    system_seed: 580316
+    alignment_mode: False
+    necessity_mode: True
+    system_seed: 108
 
-  model_name: radar_softanchor_v2
+  model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_Ablations
-  run_name: SoftAnchor_v2_ViT
+  run_name: SSAV1_L2N_NOAPE_Necs
   secret_key: 
 
-
-radar_softanchor_loo:
-
+radar_loosav1_alignment:
   config:
-    aggregate_method: norm_softmax
+    aggregate_method: entropy
     distance_metric: NA
     seq_select_method: loo_weighsum
     add_coordinates: False
@@ -102,40 +101,29 @@ radar_softanchor_loo:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 1.0
+    perc_ape: 0.0
     corrupt_imp_weights: False
-    num_epochs: 8
-    num_out: 10
-    system_seed: 12345
-
-  model_name: radar_softanchor_v1 # This is TBD whether V1 or V2
-  team_name: amith-adiraju-self
-  project_name: hybrid_posenc_test_preNormINJ_v2
-  run_name: aggregate_FiLMinj_LOOsum_sharpness
-  secret_key: 
-
-radar_softanchor_v1_random:
-  config:
-    exp_seed: 108
-    num_out: 10
-    use_both: True
-    perc_ape: 1.0
     num_epochs: 60
-    system_seed: 580316
+    num_out: 10
+    alignment_mode: True
+    necessity_mode: False
+    system_seed: 108
 
-  model_name: radar_softanchor_v1_random
+  model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_Ablations
-  run_name: SoftAnchor_v1_GaussianFiLM
+  run_name: LOOSAV1_NOAPE_Align
   secret_key: 
-  
-  
+
+
 single_peg_cpvt:
   config:
     num_out: 10
     perc_ape: 0.0
     k: 27
     num_epochs: 60
+    alignment_mode: False
+    necessity_mode: False
     system_seed: 108
 
   model_name: single_peg_cpvt
