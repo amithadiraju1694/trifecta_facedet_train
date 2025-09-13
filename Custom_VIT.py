@@ -363,6 +363,9 @@ class ViTRADAR_SoftDegrade(nn.Module):
         for param in self.vit.parameters():
             param.requires_grad = False
 
+        # Ensuring strict eval mode of backbone
+        self.vit.eval()
+
         self.distance_metric = distance_metric
         self.aggregate_method = aggregate_method
         self.seq_select_method= seq_select_method

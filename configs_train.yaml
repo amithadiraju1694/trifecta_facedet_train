@@ -10,13 +10,13 @@ radar_softdegrade_use_both:
     return_anchors: True
     perc_ape: 1.0
     corrupt_imp_weights: False
-    num_epochs: 8
-    system_seed: 12345
+    num_epochs: 300
+    system_seed: 1109711497
 
   model_name: radar_softdegrade
   team_name: amith-adiraju-self
-  project_name: hybrid_posenc_test_preNormINJ_v2
-  run_name: aggr_safepowgate_B_nonFiLM
+  project_name: ViT_RADAR_benchmarks
+  run_name: PFIM_PowerGate
   secret_key: 
 
 
@@ -33,14 +33,14 @@ radar_softanchor_v1:
     return_anchors: True
     perc_ape: 1.0
     corrupt_imp_weights: False
-    num_epochs: 8
+    num_epochs: 300
     num_out: 10
     system_seed: 108
 
   model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_test
-  run_name: SoftAnchorViT
+  project_name: ViT_RADAR_benchmarks
+  run_name: RADAR_SSAV1
   secret_key: 
 
 
@@ -86,11 +86,11 @@ single_peg_cpvt:
     perc_ape: 1.0
     k: 27
     num_epochs: 300
-    system_seed: 108
+    system_seed: 1109711497
 
   model_name: single_peg_cpvt
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_benchmarks
   run_name: SinglePEG_APE
-  secret_key:
+  secret_key: 
   
