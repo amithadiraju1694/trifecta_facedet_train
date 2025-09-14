@@ -7,7 +7,7 @@ import math
 from typing import Tuple, Optional, Union
 from helpers import get_vector_agg, compute_single_patch_phi, safe_pow_gate
 
-from Custom_VIT import AggregateSequenceGrading
+from Custom_VIT import AggregateSequenceGrading, PEG
 
 class ViTFiLM_RandNoise(nn.Module):
     """This class implements FiLM approach of modulating patch embeddings with s & b vectors 
@@ -133,6 +133,91 @@ class ViTFiLM_RandNoise(nn.Module):
 
         logits = self.classifier(req_token)  #(bs, num_labels)
 
+        return logits
+
+
+class ViTWithPEG(nn.Module):
+    """
+    CPVT-like: Single-PEG once before the encoder
+    Uses the standard single 'encoder' (stack of L transformer blocks).
+    """
+    def __init__(self,
+                 base_ckpt="google/vit-base-patch16-224",
+                 num_labels=10,
+                 perc_ape: float = 1.0,
+                 k: int = 3
+                 ):
+        super().__init__()
+        # backbone without classification head
+        self.vit = ViTModel.from_pretrained(base_ckpt)
+        self.num_labels = num_labels
+        self.perc_ape = perc_ape
+        self.k = k
+
+        for param in self.vit.parameters():
+            param.requires_grad = False
+        
+        self.vit.eval()
+        
+        ftr_dim = self.vit.config.hidden_size
+        self.peg = PEG(ftr_dim, k=self.k)
+
+        self.classifier = nn.Linear(ftr_dim, num_labels)
+    
+    def __get_vit_peout(self, pixel_values: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Private method that applies patch embeddings given raw image pixels, loads cls token and static positional encodings; doesn't apply positional encoding or 
+        cls token to patch embeddings.
+        
+        Args:
+            pixel_values (torch.Tensor): Input image tensor of shape (batch_size, num_channels, height, width).
+        
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
+                - ViT_stat_pos_emb (torch.Tensor): Static positional embeddings of shape (1, seq_len+1, hidden_size).
+                - patch_emb_output (torch.Tensor): Patch embeddings of shape (batch_size, seq_len, hidden_size).
+                - cls_token (torch.Tensor): Class token expanded to batch size of shape (batch_size, 1, hidden_size).
+        """
+
+        # Get patch embeddings - (bts, seq_len, hidden_size)
+        patch_emb_output = self.vit.embeddings.patch_embeddings(pixel_values)
+
+        # Add class token
+        cls_token = self.vit.embeddings.cls_token.expand(
+            patch_emb_output.shape[0], -1, -1)
+
+        # Get static positional embeddings
+        ViT_stat_pos_emb = self.vit.embeddings.position_embeddings  # (1, seq_len+1, hidden_size)
+
+        return (ViT_stat_pos_emb, patch_emb_output, cls_token)
+
+    def forward(self, pixel_values: torch.Tensor, alignment_mode: bool = False, necs_mode: bool = False):
+        
+        
+        with torch.no_grad():
+            # patch_emb_output - (bs, seqlen, ftrdim)
+            ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
+
+        _, seqlen, _ = patch_emb_output.shape
+        H = W = int(math.sqrt(seqlen))  # assumes square grids (ViT 224/16 => 14x14)
+        assert H*W == seqlen, "Non-square or unexpected grid; compute H,W from image/patch sizes."
+
+        # When PEG is used, patch embeddings themselves contain positional + patch information. So, can take this as-is.
+        # This Pos_idx-1 PEG variant, where injection is before any transformer layer, without multple PEG blocks. "Canonical Remedy"
+        patch_emb_output = self.peg(x=patch_emb_output, H=H, W=W)  # (bs, seqlen, ftrdim)
+        patch_emb_output = torch.cat([cls_token, patch_emb_output], dim=1) # (bs,seqlen+1,ftrdim)
+
+        # No absolute position embeddings in canonical CPVT
+        pos_encoded = patch_emb_output + ( self.perc_ape * ViT_stat_pos_emb )  # (bs, seqlen+1, ftrdim)
+        position_encoded = self.vit.embeddings.dropout(pos_encoded)
+
+        # Single encoder (stack of L transformer blocks)
+        encoder_outputs = self.vit.encoder(position_encoded, return_dict=True)
+        sequence_output = self.vit.layernorm(encoder_outputs.last_hidden_state)              # final LN
+
+        req_token = sequence_output[:, 0]  #(bs, seqlen)
+        logits = self.classifier(req_token)  #(bs, num_labels)
+        
         return logits
 
 

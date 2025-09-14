@@ -64,6 +64,81 @@ def get_device():
     return device
 
 
+def topk_acc(logits, labels, ks=(1,5)):
+    maxk = max(ks)
+    # logits: (B, C), labels: (B,) long
+    _, topk_idx = logits.topk(maxk, dim=1, largest=True, sorted=True)  # (B, maxk)
+    topk_idx = topk_idx.transpose(0,1)  # (maxk, B)
+    correct = topk_idx.eq(labels.view(1, -1))  # (maxk, B)
+
+    res = {}
+    for k in ks:
+        acc = correct[:k].any(dim=0).float().mean().item()
+        res[f"top{k}"] = acc
+    return res
+
+
+def batch_inference_template_topN(model, data_loader, criterion, device, topN_tup = (1,5)) -> Tuple[float, float]:
+
+    """
+    Function that serves as template for both validation and test sets of model, a template to avoid code duplication.
+
+    Args:
+        model: The neural network model to be evaluated.
+        data_loader: DataLoader object providing batches of data for evaluation.
+        criterion: Loss function used to compute the loss.
+        device: The device (CPU or GPU) on which computations will be performed.
+        topN_tup: A tuple of integers specifying which top-N accuracies to compute.
+    Returns:
+        A tuple containing the average loss and accuracy over the dataset.
+    """
+    # Test the model
+    model.eval()
+
+    losses = []; accuracies = []
+
+    for index, (image_batch, label_batch) in tqdm( enumerate( iter(data_loader) ) , desc="Processing batches", total = len(data_loader)):
+
+        # cast to bfloat16 and perform inference on GPU with channels placed last in memory
+        if torch.cuda.is_available():
+            image_batch = image_batch.to(device, non_blocking = True, memory_format=torch.channels_last)
+            label_batch = label_batch.to(device,non_blocking = True)
+
+            # Though using bfloat16 during inference is optional, recommended to speed up inference on GPUs that support it.
+            with torch.no_grad(), torch.amp.autocast(dtype = torch.bfloat16, device_type = "cuda"):
+                outputs = model(pixel_values = image_batch, train_mode = False)
+                loss = criterion(outputs, label_batch)
+                
+                topk_dict = topk_acc(outputs, label_batch, ks=topN_tup)
+
+                losses.append(loss.item())
+                accuracies.append(topk_dict)
+
+        # perform regular inference on CPU
+        else:
+            image_batch = image_batch.to(device)
+            label_batch = label_batch.to(device)
+
+            with torch.no_grad():
+
+                outputs = model(pixel_values = image_batch, train_mode = False)
+                loss = criterion(outputs, label_batch)
+                
+                topk_dict = topk_acc(outputs, label_batch, ks=topN_tup)
+
+                losses.append(loss.item())
+                accuracies.append(topk_dict)
+        
+
+    batch_loss = sum(losses) / len(losses)
+    batch_accuracies = {
+        f"top{k}": sum(acc[f"top{k}"] for acc in accuracies) / len(accuracies)
+        for k in topN_tup
+    }
+
+    return (batch_loss, batch_accuracies)
+
+
 def batch_inference_template(model, data_loader, criterion, device) -> Tuple[float, float]:
 
     """
@@ -123,9 +198,13 @@ def batch_inference_template(model, data_loader, criterion, device) -> Tuple[flo
     return (batch_loss, batch_acc)
 
 
-def test_model(model, test_loader, loss_function, device):
+def test_model(model, test_loader, loss_function, device, topN = False, topN_tup = None):
     print("Testing model on test dataset")
-    test_loss, test_acc = batch_inference_template(model = model, data_loader = test_loader, criterion = loss_function, device = device)
+    if not topN:
+        test_loss, test_acc = batch_inference_template(model = model, data_loader = test_loader, criterion = loss_function, device = device)
+    else:
+        assert topN_tup is not None, "Please provide a tuple of topN values to compute accuracies for"
+        test_loss, test_acc = batch_inference_template_topN(model = model, data_loader = test_loader, criterion = loss_function, device = device, topN_tup = topN_tup)
     return (test_loss, test_acc)
 
 def set_system_seed(seed_num):
@@ -144,9 +223,14 @@ def get_val_splits(train_dataset, tr_size, val_size, tr_bs, val_bs):
     return(train_loader, val_loader)
 
 
-def validate_model(model, val_loader, loss_function, device):
+def validate_model(model, val_loader, loss_function, device, topN = False, topN_tup = None):
     print("Validating model on validation dataset")
-    val_loss, val_acc = batch_inference_template(model = model, data_loader = val_loader, criterion = loss_function, device = device)
+    if not topN:
+        val_loss, val_acc = batch_inference_template(model = model, data_loader = val_loader, criterion = loss_function, device = device)
+    
+    else:
+        assert topN_tup is not None, "Please provide a tuple of topN values to compute accuracies for"
+        val_loss, val_acc = batch_inference_template_topN(model = model, data_loader = val_loader, criterion = loss_function, device = device, topN_tup = topN_tup)
     return (val_loss, val_acc)
 
 def log_model_to_wandb(run_logger, ckpt_path):
@@ -166,7 +250,17 @@ def log_model_to_wandb(run_logger, ckpt_path):
     
     return 
 
-def train_model(model, train_loader, optimizer, scheduler, loss_function, device, val_model = False, val_loader = None):
+def train_model(model,
+                train_loader,
+                optimizer,
+                scheduler,
+                loss_function,
+                device,
+                val_model = False,
+                val_loader = None,
+                topN = False,
+                topN_tup = None
+                ):
     
     batch_losses = [ ]
     model.train()
@@ -202,15 +296,32 @@ def train_model(model, train_loader, optimizer, scheduler, loss_function, device
     scheduler.step()
 
     if val_model:
-        val_loss, val_acc = validate_model(model, val_loader, loss_function, device)
+        val_loss, val_acc = validate_model(model,
+                                           val_loader,
+                                           loss_function,
+                                           device,
+                                           topN,
+                                           topN_tup)
         return (train_losses, val_loss, val_acc)
 
     else: return train_losses
 
 
-def setup_training(data_paths, num_epochs, model, device,
+def setup_training(data_paths,
+                   num_epochs,
+                   model,
+                   device,
                    batch_size = 512,
-                   patience=16, min_delta_loss=1e-8, min_epochs=20, smooth_k=7, run_logger = None,local_testing=False, log_model = False):
+                   patience=16,
+                   min_delta_loss=1e-8,
+                   min_epochs=20,
+                   smooth_k=7,
+                   run_logger = None,
+                   local_testing=False,
+                   log_model = False,
+                   topN = False,
+                   topN_tup = None
+                   ):
     
     train_loader = make_cached_loader(data_paths['train_data'], batch_size=batch_size, shuffle=True, num_workers=4)
     val_loader = make_cached_loader(data_paths['val_data'], batch_size=batch_size, shuffle=True, num_workers=4)
@@ -244,7 +355,9 @@ def setup_training(data_paths, num_epochs, model, device,
                                                         loss_function=criterion,
                                                         device = device,
                                                         val_model=True,
-                                                        val_loader=val_loader
+                                                        val_loader=val_loader,
+                                                        topN = topN,
+                                                        topN_tup = topN_tup
                                                         )
         
             val_accs.append(val_acc)
@@ -285,7 +398,9 @@ def setup_training(data_paths, num_epochs, model, device,
                                      scheduler = scheduler,
                                      loss_function=criterion,
                                      device = device,
-                                     val_model=False
+                                     val_model=False,
+                                     topN = topN,
+                                     topN_tup = topN_tup
                                      )
             # Log only in remote experiments, not local
             if not local_testing: run_logger.log({"train_loss": train_loss})
@@ -293,7 +408,12 @@ def setup_training(data_paths, num_epochs, model, device,
     checkpoint = torch.load(ckpt_path, map_location=device)
     print(f"Best model in terms of validation loss was at: {checkpoint['epoch']+1} epoch, loading it for testing.")
     model.load_state_dict(checkpoint['model_state'])
-    test_loss, test_acc = test_model(model, test_loader, criterion, device)
+    test_loss, test_acc = test_model(model,
+                                     test_loader,
+                                     criterion,
+                                     device,
+                                     topN,
+                                     topN_tup)
     
     if log_model:
         log_model_to_wandb(run_logger, ckpt_path)
@@ -396,12 +516,12 @@ if __name__ == "__main__":
         model_profile_dict = profile_models(
                                                 model = model,
                                                 example_input = torch.rand((1,3,224,224)),
-                                                total_tr_rows = 35000,
+                                                total_tr_rows = 35000, # This may need to change for CIFAR100
                                                 batch_size = 512 if torch.cuda.is_available() else 64,
                                                 num_epochs = config_details['config']['num_epochs']
                                             )
         
-        model_profile_dict['dataset']  = 'cifar10'
+        model_profile_dict['dataset']  = 'cifar100'
         run_logger.log({"model_profile": model_profile_dict})
 
     test_loss, test_acc = setup_training(data_paths = data_paths,
@@ -415,7 +535,9 @@ if __name__ == "__main__":
                    smooth_k=3,
                    run_logger = run_logger if log_metrics else None,
                    local_testing= not log_metrics,
-                   log_model = log_model
+                   log_model = log_model,
+                   topN = True,
+                   topN_tup = (1,5)
                    )
     
     print("Test Loss: ", test_loss)

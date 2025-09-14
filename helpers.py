@@ -440,6 +440,39 @@ def get_cifar10_loaders_optimized(data_dir: str='./data') -> Tuple[torch.utils.d
 
     return train_dataset, test_dataset
 
+def get_cifar100_loaders_optimized(data_dir: str='./data') -> Tuple[torch.utils.data.Dataset, torch.utils.data.Dataset]:
+    """Function that loads CIFAR100 data set from torchvision and applies transforms including resize to 224x224, normalization and augmentations.
+        Normalization uses mean and std computed from CIFAR-100 dataset.
+    """
+
+    # CIFAR-100 mean and std for normalization. computed from training set.
+    mean = (0.5071, 0.4867, 0.4408)
+    std = (0.2675, 0.2565, 0.2761)
+
+    # Training transforms with augmentation and resize to 224x224
+    train_transform = transforms.Compose([
+                            transforms.ToImage(),                                       # PIL -> tensor (uint8)
+                            transforms.Resize((224,224), interpolation=transforms.InterpolationMode.BILINEAR, antialias=True),
+                            transforms.RandomHorizontalFlip(),
+                            transforms.RandomAffine(degrees=0, translate=(0.1,0.1), interpolation=transforms.InterpolationMode.BILINEAR),
+                            transforms.ToDtype(torch.float32, scale=True),              # now [0,1]
+                            transforms.Normalize(mean, std),
+                                        ])
+
+    # Test transforms with resize to 224x224
+    test_transform = transforms.Compose([
+        transforms.ToImage(), # PIL -> Tensor fast path
+        transforms.Resize((224, 224), interpolation = transforms.InterpolationMode.BILINEAR),  # Resize to ViT's expected input size
+        transforms.ToDtype(torch.float32, scale=True),
+        transforms.Normalize(mean, std),
+    ])
+
+    # Load datasets
+    train_dataset = datasets.CIFAR100(root=data_dir, train=True, download=True, transform=train_transform)
+    test_dataset = datasets.CIFAR100(root=data_dir, train=False, download=True, transform=test_transform)
+
+    return train_dataset, test_dataset
+
 def save_cached_split(ds, path: str, batch_size: int=512, num_workers: int=8, dtype=torch.float16) -> None:
 
     """Saves tensor data in specified path with the raw torch data set provided."""
@@ -541,7 +574,7 @@ def make_cached_loader(path: str, batch_size: int=512, shuffle: bool =True, num_
                       pin_memory=pin_memory,
                       persistent_workers=persistent_workers)
 
-def prepare_cached_datasets(cached_data_path: str) -> dict:
+def prepare_cached_datasets(cached_data_path: str, dataset = "cifar10") -> dict:
     """ Function that prepares tensors from cifar10 data set , with specified transforms and stores them in current project space.
     Uses torch.float16 if cuda is available, else torch.float32 on saved tensors.
     Cached path should end with / .
@@ -558,7 +591,10 @@ def prepare_cached_datasets(cached_data_path: str) -> dict:
         return data_paths
     
     # Get images data which are transformed with affines, resized to 224x224
-    train_raw , test_raw = get_cifar10_loaders_optimized(data_dir='./data')
+    if dataset == "cifar10":
+        train_raw , test_raw = get_cifar10_loaders_optimized(data_dir='./data')
+    elif dataset == "cifar100":
+        train_raw , test_raw = get_cifar100_loaders_optimized(data_dir='./data')
     
     idx = torch.randperm(len(train_raw))
     cut = int(0.7 * len(train_raw))

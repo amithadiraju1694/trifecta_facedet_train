@@ -3,7 +3,7 @@ pfim_alignment:
     distance_metric: NA
     aggregate_method: entropy
     seq_select_method: safe_pow_gate
-    num_out: 10
+    num_out: 100
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
@@ -25,7 +25,7 @@ pfim_necessity:
     distance_metric: NA
     aggregate_method: entropy
     seq_select_method: safe_pow_gate
-    num_out: 10
+    num_out: 100
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
@@ -55,7 +55,7 @@ radar_ssav1_alignment:
     perc_ape: 0.0
     corrupt_imp_weights: False
     num_epochs: 60
-    num_out: 10
+    num_out: 100
     alignment_mode: True
     necessity_mode: False
     system_seed: 108
@@ -80,7 +80,7 @@ radar_ssav1_necessity:
     perc_ape: 0.0
     corrupt_imp_weights: False
     num_epochs: 60
-    num_out: 10
+    num_out: 100
     alignment_mode: False
     necessity_mode: True
     system_seed: 108
@@ -104,7 +104,7 @@ radar_loosav1_alignment:
     perc_ape: 0.0
     corrupt_imp_weights: False
     num_epochs: 60
-    num_out: 10
+    num_out: 100
     alignment_mode: True
     necessity_mode: False
     system_seed: 108
@@ -117,11 +117,14 @@ radar_loosav1_alignment:
 
 single_peg_cpvt:
   config:
-    num_out: 10
+    num_out: 100
     perc_ape: 1.0
     k: 27
+    alignment_mode: False
+    necessity_mode: False
     num_epochs: 300
     system_seed: 108
+
 
   model_name: single_peg_cpvt
   team_name: amith-adiraju-self
