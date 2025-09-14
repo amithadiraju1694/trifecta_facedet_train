@@ -3,7 +3,7 @@
 
 ### Pre-Computing Transformed Image Datasets
 
-We strongly suggesting pre-computing all image transformations and saving them on disk ONCE, and re-use them in all ablations and training experiments, so as to cut down compute and cost of triaing and ablations.
+We strongly suggest pre-computing all image transformations and saving them on disk ONCE, and re-use them in all ablations and training experiments, so as to cut down compute and cost of traning and ablation runs.
 
 Here's how you can do so:
 
@@ -29,7 +29,7 @@ split_pt_file_stratified(
 )
 ```
 
-#### 3. (OPTIONALLY) Reduce Training dataset of full experiment to half its size onyl for ablations
+#### 3. (OPTIONALLY) Reduce Training dataset of full experiment to half its size only for ablations
 
 ```
 # Take Validation Tensors and split it to validation and test for ablations
