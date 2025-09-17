@@ -7,7 +7,7 @@ import os
 from helpers_profiling import *
 
 
-def entropy_vec(x: torch.Tensor, req_dim: int = 2) -> torch.Tensor:
+def entropy_vec(x: torch.Tensor, req_dim: int = 2, scale_entropy = True) -> torch.Tensor:
     """
     Function that computes standard shannon entropy of tensor provided. It uses log softmax for stability when 
     computing probabilities. Shape of x will be collapsed on req_dim.
@@ -27,6 +27,16 @@ def entropy_vec(x: torch.Tensor, req_dim: int = 2) -> torch.Tensor:
 
     # shannon entropy
     vector_values = -torch.sum(probs * log_probs, axis = req_dim) # (batch_size, seq_len)
+
+    if scale_entropy:
+        # scaling entropy as H_j / log(K), where K = D, dimension we took entropy on
+        # this is important to ensure scale-invariant calculations downstream
+        # since torch.nn..log_soft uses natural log, need to scale it by same natural log.
+        # This will ensure entropy values are bounded to (0-1) under some conditions
+        denom_scaling = torch.log(
+            torch.tensor( x.shape[req_dim] ) 
+        )
+        vector_values = vector_values / (denom_scaling + 1e-8)
 
     assert not torch.isnan(vector_values).all()
     assert torch.isfinite(vector_values).all()

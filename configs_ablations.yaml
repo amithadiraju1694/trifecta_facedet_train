@@ -7,7 +7,7 @@ pfim_alignment:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 0.0
+    perc_ape: 1.0
     corrupt_imp_weights: False
     num_epochs: 60
     alignment_mode: True
@@ -16,8 +16,8 @@ pfim_alignment:
 
   model_name: radar_softdegrade
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations
-  run_name: PFIM_Entropy_NOAPE_Align
+  project_name: ViT_RADAR_Ablations_CIFAR100
+  run_name: PFIM_Entropy_APE_Align
   secret_key: 
 
 pfim_necessity:
@@ -38,9 +38,9 @@ pfim_necessity:
 
   model_name: radar_softdegrade
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations
+  project_name: ViT_RADAR_Ablations_CIFAR100
   run_name: PFIM_Entropy_NOAPE_Necs
-  secret_key:
+  secret_key: 
 
 radar_ssav1_alignment:
   config:
@@ -52,7 +52,7 @@ radar_ssav1_alignment:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 0.0
+    perc_ape: 1.0
     corrupt_imp_weights: False
     num_epochs: 60
     num_out: 100
@@ -62,10 +62,9 @@ radar_ssav1_alignment:
 
   model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations
-  run_name: SSAV1_NOAPE_Align
+  project_name: ViT_RADAR_Ablations_CIFAR100
+  run_name: SSAV1_APE_Align
   secret_key: 
-
 
 radar_ssav1_necessity:
   config:
@@ -87,8 +86,8 @@ radar_ssav1_necessity:
 
   model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations
-  run_name: SSAV1_L2N_NOAPE_Necs
+  project_name: ViT_RADAR_Ablations_CIFAR100
+  run_name: SSAV1_NOAPE_Necs
   secret_key: 
 
 radar_loosav1_alignment:
@@ -101,7 +100,7 @@ radar_loosav1_alignment:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 0.0
+    perc_ape: 1.0
     corrupt_imp_weights: False
     num_epochs: 60
     num_out: 100
@@ -111,8 +110,8 @@ radar_loosav1_alignment:
 
   model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations
-  run_name: LOOSAV1_NOAPE_Align
+  project_name: ViT_RADAR_Ablations_CIFAR100
+  run_name: LOOSAV1_APE_Align
   secret_key: 
 
 single_peg_cpvt:
@@ -122,12 +121,11 @@ single_peg_cpvt:
     k: 27
     alignment_mode: False
     necessity_mode: False
-    num_epochs: 300
+    num_epochs: 60
     system_seed: 108
-
 
   model_name: single_peg_cpvt
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_benchmarks
+  project_name: ViT_RADAR_Ablations_CIFAR100
   run_name: SinglePEG_APE
   secret_key: 

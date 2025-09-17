@@ -271,6 +271,7 @@ class ViTRADAR_SoftAnchor_v1(nn.Module):
         self.gamma = nn.Parameter(torch.tensor(0.1, dtype = torch.float32))  # Trainable scalar parameter
 
         # Custom aggregation on top of patch embeddings.
+        # This also takes care of entropy scaling and boundary value fix if entropy is used
         self.custom_pos_encoding = AggregateSequenceGrading(
             distance_metric=self.distance_metric,
             aggregate_method=self.aggregate_method,
@@ -353,7 +354,6 @@ class ViTRADAR_SoftAnchor_v1(nn.Module):
 
         s = custom_pos_encodings[:, :, :self.vit.config.hidden_size] # (bs, seqlen, ftrdim)
         b = custom_pos_encodings[:, :, self.vit.config.hidden_size: ] # (bs, seqlen, ftrdim)
-        
         
         # Random Permutations of Sj and Bj to show clear drop in performance
         if alignment_mode:
@@ -481,6 +481,12 @@ class ViTRADAR_SoftDegrade(nn.Module):
                        topk_val= None
                        ) # (batch_size, seq_len)
         
+        if self.aggregate_method == 'entropy':
+            # Doing this negation to ensure high entropy values will have high power and vice-versa
+            # safe_pow_gate also reverses vector_values. This is confidence c_j = 1- H-J.
+            # This will be plugged into x_pow as (1-c_j) * alpha..
+            vector_values = (1. - vector_values) + 1e-8
+            
         # Alignment mode is always permuting importance values, irrespective of methods used
         # alignment_mode and zeor_mode should never be used together
         if alignment_mode:

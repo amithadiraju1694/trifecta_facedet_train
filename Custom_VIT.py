@@ -71,6 +71,12 @@ class AggregateSequenceGrading(nn.Module):
                        topk_val= 98 if self.corrupt_imp_weights else None
                        ) # (batch_size, seq_len)
         
+        if self.aggregate_method == 'entropy':
+            # Doing this negation to ensure high entropy values will be scaled down aggresively
+            # and low entropy values will be scaled up , both in PFIM and RADAR LOOSA
+            # Small epsilon to cover for inclusive 0,1 boundary values
+            vector_values = (1. - vector_values) + 1e-8
+
         # Single anchor or group of anchors with soft selection
         # These anchor vectors are weighted by importance weights computed above with orginal patch embeddings
         anchor_vectors = get_anchor_vectors(seq_select_method = self.seq_select_method,
