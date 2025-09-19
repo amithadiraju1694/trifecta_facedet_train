@@ -34,14 +34,14 @@ radar_softanchor_v1:
     perc_ape: 1.0
     corrupt_imp_weights: False
     num_epochs: 300
-    num_out: 10
-    system_seed: 108
+    num_out: 100
+    system_seed: 1109711497
 
   model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_benchmarks
+  project_name: ViT_RADAR_benchmarks_CIFAR100
   run_name: RADAR_SSAV1
-  secret_key: 
+  secret_key:
 
 
 radar_softanchor_loo:
@@ -70,19 +70,19 @@ radar_softanchor_loo:
 static_pos_enc:
 
   config:
-    num_out: 10 
+    num_out: 100 
     system_seed: 1109711497
     num_epochs: 300
 
   model_name: static
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_benchmarks
+  project_name: ViT_RADAR_benchmarks_CIFAR100
   run_name: BaselineViT
   secret_key: 
 
 single_peg_cpvt:
   config:
-    num_out: 10
+    num_out: 100
     perc_ape: 1.0
     k: 27
     num_epochs: 300
@@ -90,7 +90,7 @@ single_peg_cpvt:
 
   model_name: single_peg_cpvt
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_benchmarks
+  project_name: ViT_RADAR_benchmarks_CIFAR100
   run_name: SinglePEG_APE
   secret_key: 
   
