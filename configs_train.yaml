@@ -2,7 +2,7 @@ radar_softdegrade_use_both:
 
   config:
     distance_metric: NA
-    aggregate_method: entropy
+    aggregate_method: norm_softmax
     seq_select_method: safe_pow_gate
     num_out: 10
     aggregate_dim: 2
@@ -11,12 +11,12 @@ radar_softdegrade_use_both:
     perc_ape: 1.0
     corrupt_imp_weights: False
     num_epochs: 300
-    system_seed: 1109711497
+    system_seed: 580316
 
   model_name: radar_softdegrade
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_benchmarks
-  run_name: PFIM_PowerGate
+  run_name: PFIM_L2N_PowerGate
   secret_key: 
 
 

@@ -25,7 +25,7 @@ pfim_necessity:
     distance_metric: NA
     aggregate_method: entropy
     seq_select_method: safe_pow_gate
-    num_out: 100
+    num_out: 10
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
@@ -34,12 +34,34 @@ pfim_necessity:
     num_epochs: 60
     alignment_mode: False
     necessity_mode: True
-    system_seed: 108
+    system_seed: 580316
 
   model_name: radar_softdegrade
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations_CIFAR100
+  project_name: ViT_RADAR_Ablations
   run_name: PFIM_Entropy_NOAPE_Necs
+  secret_key: 
+
+pfim_normal:
+  config:
+    distance_metric: NA
+    aggregate_method: entropy
+    seq_select_method: safe_pow_gate
+    num_out: 10
+    aggregate_dim: 2
+    norm_type: 2
+    return_anchors: True
+    perc_ape: 0.0
+    corrupt_imp_weights: True
+    num_epochs: 60
+    alignment_mode: False
+    necessity_mode: False
+    system_seed: 580316
+
+  model_name: radar_softdegrade
+  team_name: amith-adiraju-self
+  project_name: ViT_RADAR_Ablations
+  run_name: PFIM_Entropy_Corr_NOAPE
   secret_key: 
 
 radar_ssav1_alignment:
@@ -90,7 +112,32 @@ radar_ssav1_necessity:
   run_name: SSAV1_NOAPE_Necs
   secret_key: 
 
-radar_loosav1_alignment:
+
+radar_ssav1_normal:
+  config:
+    aggregate_method: entropy
+    distance_metric: NA
+    seq_select_method: weighted_sum
+    add_coordinates: False
+    K: 3
+    aggregate_dim: 2
+    norm_type: 2
+    return_anchors: True
+    perc_ape: 0.0
+    corrupt_imp_weights: False
+    num_epochs: 60
+    num_out: 10
+    alignment_mode: False
+    necessity_mode: False
+    system_seed: 580316
+
+  model_name: radar_softanchor_v1
+  team_name: amith-adiraju-self
+  project_name: ViT_RADAR_Ablations
+  run_name: SSAV1_Entropy_NOAPE
+  secret_key: 
+
+radar_loosav1_normal:
   config:
     aggregate_method: entropy
     distance_metric: NA
@@ -100,19 +147,22 @@ radar_loosav1_alignment:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 1.0
+    perc_ape: 0.0
     corrupt_imp_weights: False
     num_epochs: 60
-    num_out: 100
-    alignment_mode: True
+    num_out: 10
+    alignment_mode: False
     necessity_mode: False
-    system_seed: 108
+    system_seed: 580316
 
   model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations_CIFAR100
-  run_name: LOOSAV1_APE_Align
+  project_name: ViT_RADAR_Ablations
+  run_name: LOOSAV1_Entropy_NOAPE
   secret_key: 
+
+    
+
 
 single_peg_cpvt:
   config:

@@ -557,12 +557,12 @@ def get_project_details(yaml_config_file, exp_name):
 if __name__ == "__main__":
 
     # This is project name in yaml config file, not the model name in get_model
-    yaml_project_name = "radar_ssav1_necessity"; log_metrics = False; log_model = False
+    yaml_project_name = "pfim_normal"; log_metrics = True; log_model = False
 
     configs_path = "./configs_ablations.yaml"
-    data_paths = {"train_data": "./data/cifar100_ablations_cachegpu/train_ablations.pt",
-                    "val_data" : "./data/cifar100_ablations_cachegpu/val_ablations.pt",
-                    "test_data" : "./data/cifar100_ablations_cachegpu/test_ablations.pt" 
+    data_paths = {"train_data": "./data/cifar10_ablations_cachegpu/train_ablations.pt",
+                    "val_data" : "./data/cifar10_ablations_cachegpu/val_ablations.pt",
+                    "test_data" : "./data/cifar10_ablations_cachegpu/test_ablations.pt" 
                     }
 
     config_details = get_project_details(configs_path, yaml_project_name)
@@ -593,7 +593,7 @@ if __name__ == "__main__":
                                                 num_epochs = config_details['config']['num_epochs']
                                             )
         
-        model_profile_dict['dataset']  = 'cifar100'
+        model_profile_dict['dataset']  = 'cifar10'
         run_logger.log({"model_profile": model_profile_dict})
 
     test_loss, test_acc = setup_training(data_paths = data_paths,
@@ -610,8 +610,8 @@ if __name__ == "__main__":
                    log_model = log_model,
                    inf_algn_mode=config_details['config']['alignment_mode'],
                    inf_necs_mode=config_details['config']['necessity_mode'],
-                   topN = True,
-                   topN_tup=(1,5)
+                   topN = False,
+                   topN_tup=None
                    )
     
     print("Test Loss: ", test_loss)

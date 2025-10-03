@@ -488,9 +488,9 @@ if __name__ == "__main__":
     yaml_project_name = "radar_softdegrade_use_both"; log_metrics = True; log_model = True
     
     configs_path = "./configs_train.yaml"
-    data_paths = {"train_data": "./data/cifar100_train_cachegpu/train.pt",
-                  "val_data" : "./data/cifar100_train_cachegpu/val.pt",
-                  "test_data" : "./data/cifar100_train_cachegpu/test.pt" 
+    data_paths = {"train_data": "./data/cifar10_train_cachegpu/train.pt",
+                  "val_data" : "./data/cifar10_train_cachegpu/val.pt",
+                  "test_data" : "./data/cifar10_train_cachegpu/test.pt" 
                   }
     
     config_details = get_project_details(configs_path, yaml_project_name)
@@ -522,7 +522,7 @@ if __name__ == "__main__":
                                             )
         
         # Change this according to dataset
-        model_profile_dict['dataset']  = 'cifar100'
+        model_profile_dict['dataset']  = 'cifar10'
         run_logger.log({"model_profile": model_profile_dict})
 
     test_loss, test_acc = setup_training(data_paths = data_paths,
@@ -537,8 +537,8 @@ if __name__ == "__main__":
                    run_logger = run_logger if log_metrics else None,
                    local_testing= not log_metrics,
                    log_model = log_model,
-                   topN = True,
-                   topN_tup = (1,5)
+                   topN = False,
+                   topN_tup = None
                    )
     
     print("Test Loss: ", test_loss)
