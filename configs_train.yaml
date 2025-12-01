@@ -10,7 +10,7 @@ radar_softdegrade_use_both:
     return_anchors: True
     perc_ape: 1.0
     corrupt_imp_weights: False
-    num_epochs: 300
+    num_epochs: 3
     system_seed: 580316
 
   model_name: radar_softdegrade
@@ -94,3 +94,47 @@ single_peg_cpvt:
   run_name: SinglePEG_APE
   secret_key: 
   
+vit_lora:
+  config:
+    num_out: 10 
+    r: 16
+    lora_alpha: 16
+    target_module: attn_min
+    system_seed: 108
+    num_epochs: 300
+
+  model_name: vit_lora
+  team_name: amith-adiraju-self
+  project_name: ViT_RADAR_benchmarks
+  run_name: BaselineViT_LoRA
+  secret_key:
+
+
+vit_settrans:
+  config:
+    num_out: 10 
+    m_inducing: 16
+    n_heads: 4
+    system_seed: 108
+    num_epochs: 3
+
+  model_name: vit_settrans
+  team_name: amith-adiraju-self
+  project_name: ViT_RADAR_benchmarks_CIFAR100
+  run_name: BaselineViT_SetTrans
+  secret_key: 
+
+vit_convgpsa:
+  config:
+    num_out: 10 
+    convit_heads: 6
+    mlp_ratio: 4.0
+    system_seed: 108
+    num_epochs: 3
+
+  model_name: vit_convgpsa
+  team_name: amith-adiraju-self
+  project_name: ViT_RADAR_benchmarks_CIFAR100
+  run_name: BaselineViT_SetTrans
+  secret_key: 
+

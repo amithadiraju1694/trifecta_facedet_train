@@ -112,7 +112,6 @@ radar_ssav1_necessity:
   run_name: SSAV1_NOAPE_Necs
   secret_key: 
 
-
 radar_ssav1_normal:
   config:
     aggregate_method: entropy
@@ -161,9 +160,6 @@ radar_loosav1_normal:
   run_name: LOOSAV1_Entropy_NOAPE
   secret_key: 
 
-    
-
-
 single_peg_cpvt:
   config:
     num_out: 100
@@ -179,3 +175,55 @@ single_peg_cpvt:
   project_name: ViT_RADAR_Ablations_CIFAR100
   run_name: SinglePEG_APE
   secret_key: 
+
+
+vit_lora:
+  config:
+    num_out: 10 
+    r: 16
+    lora_alpha: 16
+    target_module: attn_mlp
+    system_seed: 108
+    num_epochs: 60
+    alignment_mode: False
+    necessity_mode: False
+
+  model_name: vit_lora
+  team_name: amith-adiraju-self
+  project_name: ViT_RADAR_Ablations
+  run_name: ViT_LoRA_hyptune_CIFAR10_r16
+  secret_key: 
+
+
+vit_settrans:
+  config:
+    num_out: 10 
+    m_inducing: 64
+    n_heads: 6
+    system_seed: 108
+    num_epochs: 60
+    alignment_mode: False
+    necessity_mode: False
+
+  model_name: vit_settrans
+  team_name: amith-adiraju-self
+  project_name: ViT_RADAR_Ablations
+  run_name: ViT_Settrans_hyptune_CIFAR10_nh6
+  secret_key: 
+
+vit_convgpsa:
+  config:
+    num_out: 10 
+    convit_heads: 6
+    mlp_ratio: 2.0
+    system_seed: 108
+    num_epochs: 60
+    alignment_mode: False
+    necessity_mode: False
+
+  model_name: vit_convgpsa
+  team_name: amith-adiraju-self
+  project_name: ViT_RADAR_Ablations
+  run_name: ViT_ConvViT_hyptune_CIFAR10_ml8
+  secret_key: 
+
