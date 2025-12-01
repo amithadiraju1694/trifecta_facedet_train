@@ -1,7 +1,5 @@
 import torch
 from torch.utils.data import DataLoader, random_split
-from torchvision import datasets
-from torchvision.transforms import v2 as transforms
 from tqdm import tqdm
 
 import random
@@ -14,7 +12,10 @@ from typing import Tuple
 from VIT_ablations import (
     ViTRADAR_SoftDegrade,
     ViTRADAR_SoftAnchor_v1,
-    ViTWithPEG
+    ViTWithPEG,
+    ViTLoRAClassifier,
+    ViTWithSetTransformerHead,
+    ViTWithConvGPSAHead
       )
 
 from helpers import make_cached_loader, profile_models
@@ -539,6 +540,32 @@ def get_model(model_name, model_config):
             perc_ape = model_config['perc_ape'],
             k = model_config['k']
         )
+    
+    if model_name == "vit_lora":
+        model = ViTLoRAClassifier(
+                 num_out_classes = model_config['num_out'],
+                 r = model_config['r'],
+                 lora_alpha = model_config['lora_alpha'],
+                 lora_dropout = 0.05,
+                 target_module = model_config["target_module"]
+                            )
+    
+    if model_name == "vit_settrans":
+
+        model = ViTWithSetTransformerHead(
+                 num_out_classes = model_config['num_out'],
+                 m_inducing = model_config["m_inducing"],
+                 n_heads = model_config["n_heads"]
+                            )
+    
+    if model_name == "vit_convgpsa":
+
+        model = ViTWithConvGPSAHead(
+            num_out_classes=model_config['num_out'],
+            convit_heads=model_config['convit_heads'],
+            mlp_ratio=model_config['mlp_ratio']
+        )
+
 
     return model
 
@@ -557,12 +584,12 @@ def get_project_details(yaml_config_file, exp_name):
 if __name__ == "__main__":
 
     # This is project name in yaml config file, not the model name in get_model
-    yaml_project_name = "pfim_normal"; log_metrics = True; log_model = False
+    yaml_project_name = "vit_convgpsa"; log_metrics = True; log_model = False
 
     configs_path = "./configs_ablations.yaml"
-    data_paths = {"train_data": "./data/cifar10_ablations_cachegpu/train_ablations.pt",
-                    "val_data" : "./data/cifar10_ablations_cachegpu/val_ablations.pt",
-                    "test_data" : "./data/cifar10_ablations_cachegpu/test_ablations.pt" 
+    data_paths = {"train_data": "/teamspace/gcs_folders/cifar10-train-cachegpu/train_ablations.pt",
+                    "val_data" : "/teamspace/gcs_folders/cifar10-train-cachegpu/val_ablations.pt",
+                    "test_data" : "/teamspace/gcs_folders/cifar10-train-cachegpu/test_ablations.pt" 
                     }
 
     config_details = get_project_details(configs_path, yaml_project_name)
@@ -586,11 +613,11 @@ if __name__ == "__main__":
 
         # Create a Complete model profile: Trainable Params, FLOPS etc including custom ops
         model_profile_dict = profile_models(
-                                                model = model,
-                                                example_input = torch.rand((1,3,224,224)),
-                                                total_tr_rows = 18000,
-                                                batch_size = 512 if torch.cuda.is_available() else 64,
-                                                num_epochs = config_details['config']['num_epochs']
+                                    model = model,
+                                    example_input = torch.rand((1,3,224,224)),
+                                    total_tr_rows = 18000,
+                                    batch_size = 512 if torch.cuda.is_available() else 64,
+                                    num_epochs = config_details['config']['num_epochs']
                                             )
         
         model_profile_dict['dataset']  = 'cifar10'

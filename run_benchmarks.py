@@ -14,6 +14,9 @@ from typing import Tuple
 
 from Custom_VIT import (
     ViTWithStaticPositionalEncoding,
+    ViTLoRAClassifier,
+    ViTWithSetTransformerHead,
+    ViTWithConvGPSAHead,
     ViTRADAR_SoftDegrade,
     ViTRADAR_SoftAnchor_v1,
     ViTWithPEG
@@ -468,6 +471,31 @@ def get_model(model_name, model_config):
             num_out_classes=model_config['num_out']
         )
     
+    if model_name == "vit_lora":
+        model = ViTLoRAClassifier(
+                 num_out_classes = model_config['num_out'],
+                 r = model_config['r'],
+                 lora_alpha = model_config['lora_alpha'],
+                 lora_dropout = 0.05,
+                 target_module = model_config["target_module"]
+                            )
+    
+    if model_name == "vit_settrans":
+
+        model = ViTWithSetTransformerHead(
+                 num_out_classes = model_config['num_out'],
+                 m_inducing = model_config["m_inducing"],
+                 n_heads = model_config["n_heads"]
+                            )
+    
+    if model_name == "vit_convgpsa":
+
+        model = ViTWithConvGPSAHead(
+            num_out_classes=model_config['num_out'],
+            convit_heads=model_config['convit_heads'],
+            mlp_ratio=model_config['mlp_ratio']
+        )
+
     return model
 
 def get_project_details(yaml_config_file, exp_name):
@@ -485,12 +513,12 @@ def get_project_details(yaml_config_file, exp_name):
 if __name__ == "__main__":
 
     # This is project name in yaml config file, not the model name in get_model
-    yaml_project_name = "radar_softdegrade_use_both"; log_metrics = True; log_model = True
+    yaml_project_name = "vit_lora"; log_metrics = True; log_model = True
     
     configs_path = "./configs_train.yaml"
-    data_paths = {"train_data": "./data/cifar10_train_cachegpu/train.pt",
-                  "val_data" : "./data/cifar10_train_cachegpu/val.pt",
-                  "test_data" : "./data/cifar10_train_cachegpu/test.pt" 
+    data_paths = {"train_data": "/teamspace/gcs_folders/cifar10-train-cachegpu/train.pt",
+                  "val_data" : "/teamspace/gcs_folders/cifar10-train-cachegpu/val.pt",
+                  "test_data" : "/teamspace/gcs_folders/cifar10-train-cachegpu/test.pt" 
                   }
     
     config_details = get_project_details(configs_path, yaml_project_name)
