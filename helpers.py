@@ -483,6 +483,33 @@ def get_cifar100_loaders_optimized(data_dir: str='./data') -> Tuple[torch.utils.
 
     return train_dataset, test_dataset
 
+def get_oxfordseg_loaders(data_dir = './data'):
+
+    IMAGENET_MEAN = (0.485, 0.456, 0.406); IMAGENET_STD  = (0.229, 0.224, 0.225)
+
+    common_train_transform = transforms.Compose([
+            transforms.ToImage(),  # PIL -> (C,H,W) uint8
+            transforms.RandomResizedCrop(224, scale=(0.5, 1.0)),
+            transforms.RandomHorizontalFlip(),
+        ])
+    
+    test_transform = transforms.Compose([
+                            transforms.ToImage(),
+                            transforms.Resize((224, 224)),
+                                        ])
+    
+    train_img_transform = transforms.Compose([
+            transforms.ToDtype(torch.float32, scale=True),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ])
+
+    datasets.OxfordIIITPet(
+        root = data_dir, split = "trainval", target_types="segmentation",
+        download = True)
+    
+
+
+
 def save_cached_split(ds, path: str, batch_size: int=512, num_workers: int=8, dtype=torch.float16) -> None:
 
     """Saves tensor data in specified path with the raw torch data set provided."""
