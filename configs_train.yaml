@@ -96,27 +96,27 @@ single_peg_cpvt:
   
 vit_lora:
   config:
-    num_out: 10 
+    num_out: 100 
     r: 16
     lora_alpha: 16
     target_module: attn_min
-    system_seed: 108
+    system_seed: 1109711497
     num_epochs: 300
 
   model_name: vit_lora
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_benchmarks
+  project_name: ViT_RADAR_benchmarks_CIFAR100
   run_name: BaselineViT_LoRA
-  secret_key:
+  secret_key: 
 
 
 vit_settrans:
   config:
-    num_out: 10 
-    m_inducing: 16
-    n_heads: 4
-    system_seed: 108
-    num_epochs: 3
+    num_out: 100 
+    m_inducing: 64
+    n_heads: 3
+    system_seed: 1109711497
+    num_epochs: 300
 
   model_name: vit_settrans
   team_name: amith-adiraju-self
@@ -126,15 +126,15 @@ vit_settrans:
 
 vit_convgpsa:
   config:
-    num_out: 10 
+    num_out: 100
     convit_heads: 6
     mlp_ratio: 4.0
-    system_seed: 108
-    num_epochs: 3
+    system_seed: 1109711497
+    num_epochs: 300
 
   model_name: vit_convgpsa
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_benchmarks_CIFAR100
-  run_name: BaselineViT_SetTrans
+  run_name: BaselineViT_ConvGPSA
   secret_key: 
 

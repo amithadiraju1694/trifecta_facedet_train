@@ -53,19 +53,23 @@ def get_all_inline_ops(model, example_input):
     ops = [op for op in ops if not op.startswith('prim::')]
     return ops
 
-
-
-
-# Unary/elemwise helpers (assumes _numel(shape) is already defined)
-def handle_elemwise(inputs, outputs):          # e.g., aten::add, mul
-    return _numel(get_shape(outputs[0]))
-
-
 def _numel(shape):
     n = 1
     for s in shape:
         n *= int(s) if s is not None else 1
     return n
+
+def handle_elemwise(inputs, outputs):
+    # try output shape first
+    shape = get_shape(outputs[0])
+    if shape is None:
+        # fall back to first tensor input, if available
+        if inputs:
+            shape = get_shape(inputs[0])
+        if shape is None:
+            return 0  # give up, don't crash FLOP counting
+    return _numel(shape)
+
 
 def handle_sum(inputs, outputs):          # aten::sum (reduction)
     return _numel(get_shape(inputs[0]))   # ~ one add per input element
@@ -110,6 +114,22 @@ def handle_sdpa(inputs, outputs):
     return fl_qk + fl_av + fl_sm
 
 
+def handle_meshgrid(inputs, outputs):
+    """
+    Approx FLOPs for aten::meshgrid.*
+    meshgrid is mostly index arithmetic / broadcasting; compute cost
+    ~ number of output elements (very cheap vs matmuls).
+    """
+    # outputs is a list/tuple of IR values; each has its own shape
+    total = 0
+    for out in outputs:
+        shape = get_shape(out)
+        if shape is None:
+            continue  # can't infer, skip instead of crashing
+        total += _numel(shape)
+    return total
+
+
 def flops_breakdown(model, example_input, un_supported_ops, num_train_samples=None,
                     batch_size=1, num_epochs=1):
 
@@ -131,8 +151,10 @@ def flops_breakdown(model, example_input, un_supported_ops, num_train_samples=No
         element_wise_ops = ("aten::add", "aten::mul", "aten::relu", "aten::sub",
                             "aten::div", "aten::exp","aten::neg","aten::tanh",
                             "aten::sign","aten::abs", "aten::pow", "aten::sqrt", 
-                            "aten::log", "aten::sin", "aten::cos"
-        )
+                            "aten::log", "aten::sin", "aten::cos", "aten::softplus",
+                            "aten::sigmoid"
+                            )
+        ana.set_op_handle("aten::meshgrid", handle_meshgrid)
         ana.set_op_handle("aten::gelu", handle_gelu)
         ana.set_op_handle("aten::scaled_dot_product_attention", handle_sdpa)
 

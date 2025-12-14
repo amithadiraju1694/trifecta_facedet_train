@@ -516,9 +516,9 @@ if __name__ == "__main__":
     yaml_project_name = "vit_lora"; log_metrics = True; log_model = True
     
     configs_path = "./configs_train.yaml"
-    data_paths = {"train_data": "/teamspace/gcs_folders/cifar10-train-cachegpu/train.pt",
-                  "val_data" : "/teamspace/gcs_folders/cifar10-train-cachegpu/val.pt",
-                  "test_data" : "/teamspace/gcs_folders/cifar10-train-cachegpu/test.pt" 
+    data_paths = {"train_data": "/teamspace/gcs_folders/cifar100-train-cachegpu/train.pt",
+                  "val_data" : "/teamspace/gcs_folders/cifar100-train-cachegpu/val.pt",
+                  "test_data" : "/teamspace/gcs_folders/cifar100-train-cachegpu/test.pt" 
                   }
     
     config_details = get_project_details(configs_path, yaml_project_name)
@@ -544,13 +544,13 @@ if __name__ == "__main__":
         model_profile_dict = profile_models(
                                                 model = model,
                                                 example_input = torch.rand((1,3,224,224)),
-                                                total_tr_rows = 35000, # This may need to change for CIFAR100
+                                                total_tr_rows = 35000,
                                                 batch_size = 512 if torch.cuda.is_available() else 64,
                                                 num_epochs = config_details['config']['num_epochs']
                                             )
         
         # Change this according to dataset
-        model_profile_dict['dataset']  = 'cifar10'
+        model_profile_dict['dataset']  = 'cifar100'
         run_logger.log({"model_profile": model_profile_dict})
 
     test_loss, test_acc = setup_training(data_paths = data_paths,
@@ -565,8 +565,8 @@ if __name__ == "__main__":
                    run_logger = run_logger if log_metrics else None,
                    local_testing= not log_metrics,
                    log_model = log_model,
-                   topN = False,
-                   topN_tup = None
+                   topN = True,
+                   topN_tup = (1,5)
                    )
     
     print("Test Loss: ", test_loss)

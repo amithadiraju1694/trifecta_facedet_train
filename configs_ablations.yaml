@@ -199,7 +199,7 @@ vit_settrans:
   config:
     num_out: 10 
     m_inducing: 64
-    n_heads: 6
+    n_heads: 12
     system_seed: 108
     num_epochs: 60
     alignment_mode: False
@@ -208,7 +208,7 @@ vit_settrans:
   model_name: vit_settrans
   team_name: amith-adiraju-self
   project_name: ViT_RADAR_Ablations
-  run_name: ViT_Settrans_hyptune_CIFAR10_nh6
+  run_name: ViT_Settrans_hyptune_CIFAR10_nh12
   secret_key: 
 
 vit_convgpsa:

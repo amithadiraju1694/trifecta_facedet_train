@@ -584,7 +584,7 @@ def get_project_details(yaml_config_file, exp_name):
 if __name__ == "__main__":
 
     # This is project name in yaml config file, not the model name in get_model
-    yaml_project_name = "vit_convgpsa"; log_metrics = True; log_model = False
+    yaml_project_name = "vit_settrans"; log_metrics = True; log_model = False
 
     configs_path = "./configs_ablations.yaml"
     data_paths = {"train_data": "/teamspace/gcs_folders/cifar10-train-cachegpu/train_ablations.pt",
