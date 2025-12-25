@@ -1,7 +1,7 @@
 data/*
 wandb/*
 findings.txt
-test.ipynb
+test*.ipynb
 __pycache__
 .DS_Store
 *.pth

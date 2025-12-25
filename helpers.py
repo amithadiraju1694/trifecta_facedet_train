@@ -1,4 +1,8 @@
 import torch
+import random
+import yaml
+import numpy as np
+import wandb
 from torch.utils.data import DataLoader, TensorDataset, Dataset
 from torchvision.transforms import v2 as transforms
 from torchvision import datasets
@@ -751,3 +755,85 @@ def profile_models(model, example_input, total_tr_rows, batch_size, num_epochs):
     profile_metrics['trainable_params_by_mod'] = tr_params_by_mod
 
     return profile_metrics
+
+
+def set_system_seed(seed_num):
+    torch.manual_seed(seed_num)
+    random.seed(seed_num)
+    np.random.seed(seed_num)
+
+def log_model_to_wandb(run_logger, ckpt_path):
+
+    try:
+        # Create a W&B artifact
+        artifact = wandb.Artifact(name="best_valloss_model_checkpoint", type="model")
+
+        # Add the .pth file to the artifact
+        artifact.add_file(ckpt_path)
+
+        # Log the artifact using the existing run_logger
+        run_logger.log_artifact(artifact)
+    
+    except Exception as e:
+        print(f"Could not log artifact because of this error: {e}")
+    
+    return 
+
+def get_val_splits(train_dataset, tr_size, val_size, tr_bs, val_bs):
+
+    tr_dt, val_dt = random_split(train_dataset, [tr_size, val_size])
+
+    train_loader = DataLoader(tr_dt, batch_size = tr_bs)
+    val_loader = DataLoader(val_dt, batch_size = val_bs)
+
+    return(train_loader, val_loader)
+
+def init_wandb(team_name: str, project_name: str, run_name:str, secret_key:str, additional_config: dict = None):
+
+    """" Function that initializes a WanDB session with the provided parameters."""
+
+    try:
+        wandb.login(key = secret_key)
+    except:
+        raise Exception("Error logging into Wandb with provided token")
+
+    # Start a new wandb run to track this script.
+    run = wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity=team_name,
+
+        # Set the wandb project where this run will be logged.
+        project=project_name,
+
+        name = run_name,
+
+        config = additional_config,
+
+        settings = wandb.Settings(code_dir = './')
+    )
+
+    return run
+
+def get_device():
+
+    device = torch.device('cpu')
+
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    
+    print("Using device: ", device)
+    
+
+    return device
+
+def get_project_details(yaml_config_file, exp_name):
+
+    with open(yaml_config_file, 'r') as file:
+        loaded_config = yaml.safe_load(file)
+    
+    # loaded_config - 'yaml_project_name' , config, model_name, team_name, project_name, run_name, secret_key
+    if exp_name in loaded_config:
+        return loaded_config[exp_name]
+    else:
+        raise Exception("Provided experiment doesn't exist")
+
