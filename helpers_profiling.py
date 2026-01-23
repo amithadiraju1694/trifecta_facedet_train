@@ -1,5 +1,6 @@
 from typing import Tuple
 import torch
+import torch.nn as nn
 from fvcore.nn.jit_handles import get_shape
 from fvcore.nn import FlopCountAnalysis
 
@@ -130,6 +131,73 @@ def handle_meshgrid(inputs, outputs):
     return total
 
 
+def handle_generic_elementwise(inputs, outputs):
+    """Handles simple element-wise ops like fill_, ne, etc."""
+    out_shape = get_shape(outputs[0])
+    num_elements = 1
+    for s in out_shape:
+        num_elements *= s
+    return num_elements
+
+def handle_cumsum(inputs, outputs):
+    """Cumulative sum is essentially N additions."""
+    return handle_generic_elementwise(inputs, outputs)
+
+def handle_pad(inputs, outputs):
+    """Padding involves moving data; usually counted as 0 FLOPs, 
+    but we can count the elements being padded if desired."""
+    return 0  # Standard practice is 0, or use handle_generic_elementwise
+
+
+def handle_linear(inputs, outputs):
+    """Calculates FLOPs for Linear layers: 2 * in * out * batch_elements."""
+    # Weight is usually the second input in the JIT graph for nn.Linear
+    weight_shape = inputs[1].type().sizes() 
+    out_features, in_features = weight_shape[0], weight_shape[1]
+    
+    output_shape = get_shape(outputs[0])
+    batch_elements = 1
+    for s in output_shape[:-1]: 
+        batch_elements *= s
+        
+    return 2 * in_features * out_features * batch_elements
+
+def handle_layernorm(inputs, outputs):
+    """Calculates FLOPs for LayerNorm: ~5 operations per element."""
+    output_shape = get_shape(outputs[0])
+    elements = 1
+    for s in output_shape: 
+        elements *= s
+    return 5 * elements
+
+def handle_attention(inputs, outputs):
+    """
+    Handles Multi-Head Attention (Self or Cross).
+    Covers: Q/K/V/Out Projections + Attention Matmuls.
+    """
+    # Assuming standard Transformer shapes: [Batch, Seq, Dim]
+    q_shape = get_shape(inputs[0])
+    k_shape = get_shape(inputs[1]) # Key/Value shape for Cross-Attn
+    
+    B, Lq, D = q_shape[0], q_shape[1], q_shape[2]
+    Lk = k_shape[1]
+    
+    # 1. Projections (Q, K, V, and Output)
+    # 4 Projections * 2 * B * L * D * D
+    proj_flops = 2 * B * (Lq + 3 * Lk) * D * D
+    
+    # 2. Attention Matrix: (QK^T) -> [B, heads, Lq, Lk]
+    # 2 * B * Lq * Lk * D
+    attn_weight_flops = 2 * B * Lq * Lk * D
+    
+    # 3. Value Aggregation: (Attn * V) -> [B, Lq, D]
+    # 2 * B * Lq * Lk * D
+    value_agg_flops = 2 * B * Lq * Lk * D
+    
+    return proj_flops + attn_weight_flops + value_agg_flops
+
+
+
 def flops_breakdown(model, example_input, un_supported_ops, num_train_samples=None,
                     batch_size=1, num_epochs=1):
 
@@ -152,11 +220,20 @@ def flops_breakdown(model, example_input, un_supported_ops, num_train_samples=No
                             "aten::div", "aten::exp","aten::neg","aten::tanh",
                             "aten::sign","aten::abs", "aten::pow", "aten::sqrt", 
                             "aten::log", "aten::sin", "aten::cos", "aten::softplus",
-                            "aten::sigmoid"
-                            )
+                            "aten::sigmoid")
+
         ana.set_op_handle("aten::meshgrid", handle_meshgrid)
         ana.set_op_handle("aten::gelu", handle_gelu)
         ana.set_op_handle("aten::scaled_dot_product_attention", handle_sdpa)
+        
+        ana.set_op_handle("aten::pad", handle_pad)
+        ana.set_op_handle("aten::fill_", handle_generic_elementwise)
+        ana.set_op_handle("aten::ne", handle_generic_elementwise)
+        ana.set_op_handle("aten::cumsum", handle_cumsum)
+        ana.set_op_handle("aten::linspace", handle_generic_elementwise)
+        ana.set_op_handle("aten::addmm", handle_linear)
+        ana.set_op_handle("aten::linear", handle_linear)
+        ana.set_op_handle("aten::layer_norm", handle_layernorm )
 
         for op in un_supported_ops:
             if op.startswith( element_wise_ops ):

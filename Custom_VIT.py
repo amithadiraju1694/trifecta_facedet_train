@@ -998,7 +998,6 @@ class ViTLoRAClassifier(nn.Module):
         return logits
 
 
-# -------- Set Transformer (Lee et al., 2019) blocks --------
 class rFF(nn.Module):
     def __init__(self, d, hidden_mult=4, drop=0.0):
         super().__init__()
@@ -1070,7 +1069,7 @@ class SetTransformerHead(nn.Module):
         z = self.pma(x)           # (B, 1, d)
         return z.squeeze(1)       # (B, d)
 
-# -------- ViT + Static PE (frozen) + Set Transformer head + classifier --------
+
 class ViTWithSetTransformerHead(nn.Module):
     """
     Canonical baseline: Frozen ViT (google/vit-base-patch16-224) provides token embeddings
@@ -1121,7 +1120,6 @@ class ViTWithSetTransformerHead(nn.Module):
         return logits
 
 
-# ---------- ConViT-style GPSA front-end (trainable), ViT frozen ----------
 class GPSA(nn.Module):
     """
     Gated Positional Self-Attention (ConViT-style) operating on patch tokens.
@@ -1212,7 +1210,7 @@ class ConViTHead(nn.Module):
         x = x + self.mlp(self.ln2(x))
         return x
 
-# ---------- ViT (frozen) + ConViT front-end + classifier ----------
+
 class ViTWithConvGPSAHead(nn.Module):
     """
     Canonical, compute-matched baseline:
@@ -1266,3 +1264,87 @@ class ViTWithConvGPSAHead(nn.Module):
         cls_tok = seq[:, 0]
         logits = self.classifier(cls_tok)
         return logits
+
+
+# Dummy, Don't touch
+class ViTSegHead(nn.Module):
+    def __init__(self,
+                 backbone_name="google/vit-base-patch16-224",
+                 num_classes=4,
+                 transpose_convolutions = False
+                 ):
+        super().__init__()
+        self.vit = ViTModel.from_pretrained(backbone_name)
+        # freeze backbone
+        for p in self.vit.parameters():
+            p.requires_grad = False
+        self.vit.eval()
+        self.hidden = self.vit.config.hidden_size
+        self.transpose_conv = transpose_convolutions
+        
+        if self.transpose_conv:
+            self.seg_head = nn.Sequential(
+                # B,D,14,14 -> B, 256, 56,56
+                nn.ConvTranspose2d(in_channels = self.hidden, out_channels = 256, kernel_size = 4, stride = 4),
+                nn.BatchNorm2d(256),
+                nn.ReLU(inplace = True),
+
+                # B,256,56,56 -> B,128,112,112
+                nn.ConvTranspose2d(in_channels = 256, out_channels = 128, kernel_size = 2, stride = 2),
+                nn.BatchNorm2d(128),
+                nn.ReLU(inplace = True),
+
+                # B,128,56,56 -> B,64,224,224
+                nn.ConvTranspose2d(in_channels = 128, out_channels = 64, kernel_size = 2, stride = 2),
+                nn.BatchNorm2d(64),
+                nn.ReLU(inplace = True),
+
+                # B,64,224,224 -> B,nC, 224,224
+                nn.Conv2d(in_channels = 64, out_channels = num_classes, kernel_size = 1)
+
+                                                )
+        else:
+            # simple 1×1 + upsample head
+            self.seg_head = nn.Sequential(
+                nn.Conv2d(self.hidden, self.hidden, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(self.hidden, num_classes, kernel_size=1),
+            )
+
+    def _vit_tokens(self, x):
+        # x: (B,3,224,224)
+        out = self.vit(pixel_values=x, return_dict=True)
+        
+        # drop CLS
+        tokens = out.last_hidden_state[:, 1:, :]          # (B,196,D)
+        B, N, D = tokens.shape
+        H = W = int(N ** 0.5)
+        
+        # reshape to (B,D,H,W) with H=W=14
+        tokens = tokens.transpose(1, 2).reshape(B, D, H, W)
+        return tokens
+
+    def forward(self, x):
+        # Batch size, dim_out = 768, num_tokens collapsed to height and width
+        with torch.no_grad():
+            feats = self._vit_tokens(x)                   # (B,D,14,14)
+        
+        # batch size, num_segment maps, height , width
+        # could be bs,C,14,14 or bs,C,224,224 depends
+        logits = self.seg_head(feats) 
+        
+        if not self.transpose_conv:
+
+            # explode image into original size with bilinear filling.
+            # This could also be transpose convolution operation
+            logits = F.interpolate(logits,
+                                size=(224, 224),
+                                mode="bilinear",
+                                align_corners=False
+                                )
+            
+        return logits  # (B,C,224,224)
+
+        
+
+
