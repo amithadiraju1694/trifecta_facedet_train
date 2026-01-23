@@ -3,7 +3,13 @@ import random
 import yaml
 import numpy as np
 import wandb
-from torch.utils.data import DataLoader, TensorDataset, Dataset
+from torch.utils.data import (
+    DataLoader,
+    TensorDataset,
+    Dataset,
+    random_split
+)
+
 from torchvision.transforms import v2 as transforms
 from torchvision import datasets
 from typing import Optional, Tuple, Union
@@ -793,7 +799,7 @@ def init_wandb(team_name: str, project_name: str, run_name:str, secret_key:str, 
     """" Function that initializes a WanDB session with the provided parameters."""
 
     try:
-        wandb.login(key = secret_key)
+        wandb.login(key = secret_key, force = True)
     except:
         raise Exception("Error logging into Wandb with provided token")
 

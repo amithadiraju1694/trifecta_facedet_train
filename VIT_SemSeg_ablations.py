@@ -362,7 +362,7 @@ class ViTLoRA_SemSeg(nn.Module):
                 nn.BatchNorm2d(128),
                 nn.ReLU(inplace = True),
 
-                # B,128,56,56 -> B,64,224,224
+                # B,128,112,112 -> B,64,224,224
                 nn.ConvTranspose2d(in_channels = 128, out_channels = 64, kernel_size = 2, stride = 2),
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace = True),

@@ -227,7 +227,7 @@ vit_convgpsa:
 
 vit_lora_semseg:
   config: 
-    r: 16
+    r: 32
     lora_alpha: 16
     target_module: attn_mlp
     system_seed: 108
@@ -240,8 +240,8 @@ vit_lora_semseg:
 
   model_name: vit_lora
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations
-  run_name: ViT_LoRA_hyptune_CIFAR10_r16
+  project_name: ViT_RADAR_SemSeg_Ablations
+  run_name: ViT_LoRA_hyptune_oxford_r16
   secret_key: 
 
 pfim_normal_semseg:
@@ -251,27 +251,27 @@ pfim_normal_semseg:
     seq_select_method: safe_pow_gate
 
     num_out: 4
-    transpose_convolutions: True
+    transpose_convolutions: False
 
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 0.0
+    perc_ape: 1.0
     corrupt_imp_weights: False
     num_epochs: 60
     alignment_mode: False
     necessity_mode: False
-    system_seed: 580316
+    system_seed: 108
 
   model_name: radar_softdegrade
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations
-  run_name: PFIM_Entropy_Corr_NOAPE
+  project_name: ViT_RADAR_SemSeg_Ablations
+  run_name: PFIMNORMAL_NTransp
   secret_key: 
 
 radar_ssav1_semseg:
   config:
-    aggregate_method: entropy
+    aggregate_method: norm_softmax
     distance_metric: NA
     seq_select_method: weighted_sum
     add_coordinates: False
@@ -279,21 +279,21 @@ radar_ssav1_semseg:
     aggregate_dim: 2
     norm_type: 2
     return_anchors: True
-    perc_ape: 0.0
+    perc_ape: 1.0
     corrupt_imp_weights: False
     num_epochs: 60
     
     num_out: 4
-    transpose_convolutions: True
+    transpose_convolutions: False
 
     alignment_mode: False
     necessity_mode: False
-    system_seed: 580316
+    system_seed: 108
 
   model_name: radar_softanchor_v1
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations
-  run_name: SSAV1_Entropy_NOAPE
+  project_name: ViT_RADAR_SemSeg_Ablations
+  run_name: RADAR_SSA_V1_NTransp
   secret_key: 
 
 single_peg_cpvt_semseg:
@@ -310,26 +310,25 @@ single_peg_cpvt_semseg:
 
   model_name: single_peg_cpvt
   team_name: amith-adiraju-self
-  project_name: ViT_RADAR_Ablations_CIFAR100
-  run_name: SinglePEG_APE
+  project_name: ViT_RADAR_SemSeg_Ablations
+  run_name: SinglePEG_WTransp
   secret_key: 
 
 vit_mask2form_semseg:
   config:
-    
     num_out: 4
-    transpose_convolutions: True
+    transpose_convolutions: False
 
-    num_epochs: 4
+    num_epochs: 10
     system_seed: 108
     alignment_mode: False
     necessity_mode: False
   
   model_name: vit_mask2form
-  team_name: abc
-  project_name: abc
-  run_name: abc
-  secret_key: abc
+  team_name: amith-adiraju-self
+  project_name: ViT_RADAR_SemSeg_Ablations
+  run_name: ViT_Mas2Form
+  secret_key: 
 
 vit_segform_semseg:
   config:
@@ -337,13 +336,13 @@ vit_segform_semseg:
     num_out: 4
     transpose_convolutions: False
 
-    num_epochs: 4
+    num_epochs: 60
     system_seed: 108
     alignment_mode: False
     necessity_mode: False
   
   model_name: vit_segform
-  team_name: abc
-  project_name: abc
-  run_name: abc
-  secret_key: abc
+  team_name: amith-adiraju-self
+  project_name: ViT_RADAR_SemSeg_Ablations
+  run_name: ViT_SegForm_NTransp
+  secret_key: 

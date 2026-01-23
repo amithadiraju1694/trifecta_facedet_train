@@ -178,14 +178,14 @@ class ViTWithPEG_SemSeg(nn.Module):
     """
     def __init__(self,
                  base_ckpt="google/vit-base-patch16-224",
-                 num_labels=10,
+                 num_out_classes=10,
                  perc_ape: float = 1.0,
                  k: int = 3,
                  transpose_convolutions = False
                  ):
         super().__init__()
         self.vit = ViTModel.from_pretrained(base_ckpt)
-        self.num_labels = num_labels
+        self.num_out_classes = num_out_classes
         self.perc_ape = perc_ape
         self.k = k
 
@@ -211,20 +211,20 @@ class ViTWithPEG_SemSeg(nn.Module):
                 nn.BatchNorm2d(128),
                 nn.ReLU(inplace = True),
 
-                # B,128,56,56 -> B,64,224,224
+                # B,128,112,112 -> B,64,224,224
                 nn.ConvTranspose2d(in_channels = 128, out_channels = 64, kernel_size = 2, stride = 2),
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace = True),
 
                 # B,64,224,224 -> B,nC, 224,224
-                nn.Conv2d(in_channels = 64, out_channels = num_labels, kernel_size = 1)
+                nn.Conv2d(in_channels = 64, out_channels = num_out_classes, kernel_size = 1)
 
                                                 )
         else:
             self.seg_head = nn.Sequential(
                 nn.Conv2d(self.hidden, self.hidden, kernel_size=3, padding=1),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(self.hidden, num_labels, kernel_size=1),
+                nn.Conv2d(self.hidden, num_out_classes, kernel_size=1),
             )
     
     def __get_vit_peout(self, pixel_values: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -303,7 +303,6 @@ class ViTWithPEG_SemSeg(nn.Module):
             
         return logits  # (B,C,224,224)
 
-
 class ViTLoRA_SemSeg(nn.Module):
     def __init__(self,
                  pretrained_model_name="google/vit-base-patch16-224",
@@ -312,14 +311,14 @@ class ViTLoRA_SemSeg(nn.Module):
                  lora_alpha = 16,
                  lora_dropout = 0.05,
                  target_module = "attn_min",
-                 tranpose_convolutions = False
+                 transpose_convolutions = False
                  ):
 
         super().__init__()
 
         self.vit = ViTModel.from_pretrained(pretrained_model_name)
         self.hidden = self.vit.config.hidden_size
-        self.transpose_conv = tranpose_convolutions
+        self.transpose_conv = transpose_convolutions
         
 
         # Choose which linear layers to adapt (canonical = Q/V only)
@@ -365,7 +364,7 @@ class ViTLoRA_SemSeg(nn.Module):
                 nn.BatchNorm2d(128),
                 nn.ReLU(inplace = True),
 
-                # B,128,56,56 -> B,64,224,224
+                # B,128,112,112 -> B,64,224,224
                 nn.ConvTranspose2d(in_channels = 128, out_channels = 64, kernel_size = 2, stride = 2),
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace = True),
@@ -686,7 +685,7 @@ class ViTRADAR_SoftDegrade_SemSeg(nn.Module):
                 nn.BatchNorm2d(128),
                 nn.ReLU(inplace = True),
 
-                # B,128,56,56 -> B,64,224,224
+                # B,128,112,112 -> B,64,224,224
                 nn.ConvTranspose2d(in_channels = 128, out_channels = 64, kernel_size = 2, stride = 2),
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace = True),
@@ -873,7 +872,7 @@ class ViTRADAR_SoftAnchor_v1_SemSeg(nn.Module):
                 nn.BatchNorm2d(128),
                 nn.ReLU(inplace = True),
 
-                # B,128,56,56 -> B,64,224,224
+                # B,128,112,112 -> B,64,224,224
                 nn.ConvTranspose2d(in_channels = 128, out_channels = 64, kernel_size = 2, stride = 2),
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace = True),

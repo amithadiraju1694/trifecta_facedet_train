@@ -36,9 +36,9 @@ warnings.filterwarnings("ignore")
 os.environ["WANDB_SILENT"] = "true"
 
 
-def mean_iou(logits, masks_labels, num_out_classes, task= 'multiclass' ):
+def mean_iou(logits, masks_labels, num_out_classes, device, task= 'multiclass' ):
 
-    jaccard = JaccardIndex(task=task, num_classes=num_out_classes)
+    jaccard = JaccardIndex(task=task, num_classes=num_out_classes).to(device)
     return jaccard(logits, masks_labels).item()
 
 def batch_inference_template(model,
@@ -78,7 +78,7 @@ def batch_inference_template(model,
             with torch.no_grad(), torch.amp.autocast(dtype = torch.bfloat16, device_type = "cuda"):
                 outputs = model(pixel_values = image_batch, alignment_mode = algn_mode, necs_mode = necs_mode)
                 loss = criterion(outputs, label_batch)
-                miou = mean_iou(outputs, label_batch, num_out_classes, task)
+                miou = mean_iou(outputs, label_batch, num_out_classes,device, task)
 
                 losses.append(loss.item())
                 mious.append(miou)
@@ -92,7 +92,7 @@ def batch_inference_template(model,
 
                 outputs = model(pixel_values = image_batch, alignment_mode = algn_mode, necs_mode = necs_mode)
                 loss = criterion(outputs, label_batch)
-                miou = mean_iou(outputs, label_batch, num_out_classes, task)
+                miou = mean_iou(outputs, label_batch, num_out_classes, device, task)
 
                 losses.append(loss.item())
                 mious.append(miou)
@@ -251,7 +251,7 @@ def setup_training(data_paths,
     optimizer = torch.optim.AdamW(params, lr=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, eta_min=1e-6)
 
-    val_metric, val_losses, best_val_loss_sm = [],[], float('inf')
+    val_metrics, val_losses, best_val_loss_sm = [],[], float('inf')
     epochs_no_improve, ckpt_path = 0, 'best_by_valloss.pth'
     
     # by default model should be in float 32
@@ -281,7 +281,7 @@ def setup_training(data_paths,
                                                         task = task
                                                         )
         
-            val_metric.append(val_metric)
+            val_metrics.append(val_metric)
             val_losses.append(val_loss)
         
             loss_window = val_losses[-smooth_k:] if len(val_losses) >= smooth_k else val_losses
@@ -295,7 +295,7 @@ def setup_training(data_paths,
                             'model_state': model.state_dict(),
                             'optimizer_state': optimizer.state_dict(),
                             'val_loss_sm': val_loss_sm,
-                            'val_acc': val_metric},
+                            'val_metric': val_metric},
                             ckpt_path)
             
             # Terminating training because epoch didn't improve until patience time
@@ -345,7 +345,7 @@ def setup_training(data_paths,
         log_model_to_wandb(run_logger, ckpt_path)
 
     if not local_testing:
-        run_logger.log({"test_metricuracy": test_metric, "test_loss": test_loss}); run_logger.finish()
+        run_logger.log({"test_metric": test_metric, "test_loss": test_loss}); run_logger.finish()
     
 
     return (test_loss, test_metric)
@@ -426,12 +426,12 @@ def get_model(model_name, model_config):
 if __name__ == "__main__":
 
     # This is project name in yaml config file, not the model name in get_model
-    yaml_project_name = "vit_segform_semseg"; log_metrics = False; log_model = False
+    yaml_project_name = "vit_mask2form_semseg"; log_metrics = True; log_model = False
 
     configs_path = "./configs_ablations.yaml"
-    data_paths = {"train_data": "./data/cache_oxford_cpu_ablations/train_ablations.pt",
-                    "val_data" : "./data/cache_oxford_cpu_ablations/val_ablations.pt",
-                    "test_data" : "./data/cache_oxford_cpu_ablations/test_ablations.pt" 
+    data_paths = {"train_data": "/teamspace/gcs_folders/oxfordpet-train-cachegpu/train_ablations.pt",
+                    "val_data" : "/teamspace/gcs_folders/oxfordpet-train-cachegpu/val_ablations.pt",
+                    "test_data" : "/teamspace/gcs_folders/oxfordpet-train-cachegpu/test_ablations.pt" 
                     }
 
     config_details = get_project_details(configs_path, yaml_project_name)
