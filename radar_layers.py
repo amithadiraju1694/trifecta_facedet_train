@@ -164,12 +164,9 @@ class AggregateSequenceGrading(nn.Module):
         Returns:
             Positional encodings as distances from max vector (batch_size, seq_len, 1)
         """
-        # Do grading/softmax in fp32 for stability (especially in fp16), then cast outputs back.
-        x_fp32 = x if x.dtype == torch.float32 else x.float()
-
         # Aggregate vectors of original image/ patch embeddings. ex: l2 norm, entropy-based, softmax, max-min etc
         # (bs, seqlen)
-        vector_values = self.__get_vector_agg(x=x_fp32,
+        vector_values = self.__get_vector_agg(x=x,
                                             smooth_topk=self.corrupt_imp_weights,
                                             topk_val= 98 if self.corrupt_imp_weights else None
                                             ) # (batch_size, seq_len)
@@ -183,16 +180,11 @@ class AggregateSequenceGrading(nn.Module):
         # Single anchor or group of anchors with soft selection
         # These anchor vectors are weighted by importance weights computed above with orginal patch embeddings
         anchor_vectors = self.__get_anchor_vectors(vector_values = vector_values,
-                                                 x = x_fp32
+                                                 x = x
                                                  )
         
         # Compute distances from the maximum vector
-        distances = self.__compute_distances(x_fp32, anchor_vectors)
-
-        vector_values = vector_values.to(x.dtype)
-        anchor_vectors = anchor_vectors.to(x.dtype)
-        if distances is not None:
-            distances = distances.to(x.dtype)
+        distances = self.__compute_distances(x, anchor_vectors)
 
         if self.return_anchors:
             return(distances, anchor_vectors, vector_values)
@@ -213,7 +205,7 @@ class AggregateSequenceGrading(nn.Module):
         """
         # This is safest and non-Nan or non-Inf entropy
         with torch.no_grad():
-            log_probs = torch.nn.functional.log_softmax(x.float(), dim=self.aggregate_dim)
+            log_probs = torch.nn.functional.log_softmax(x, dim=self.aggregate_dim)
             probs = log_probs.exp()
 
         # shannon entropy
@@ -242,8 +234,6 @@ class AggregateSequenceGrading(nn.Module):
         if len(weights.shape) == 2:
             weights = weights.unsqueeze(-1) # (bs, seqlen, 1)
         
-        weights = weights.float()
-        x = x.float()
         return torch.sum(weights * x, dim=sum_dim, keepdim=True)
 
     @staticmethod
@@ -261,9 +251,6 @@ class AggregateSequenceGrading(nn.Module):
             loo_anchor: Soft Anchor computed from patch embeddings ( uses all-but-one sequences weighted by importance score ).
         
         """
-        weights = weights.float()
-        x = x.float()
-
         # totals over all tokens
         # This sum ensures all [0-1] probs are added together making 1, suitable for denominator.
         sum_w   = weights.sum(dim=1, keepdim=True)                      # (B,1)
@@ -397,12 +384,11 @@ class RADAR(nn.Module):
         """
     
         bs, seqlen, _ = x.shape
-        dtype = x.dtype
 
         # stable offset sum computation
         delta = 1e-3
-        diff = x.float() - anchor_values.float()
-        offset = torch.sqrt( diff.pow(2) + delta ** 2) - delta
+        diff = x - anchor_values
+        offset = torch.sqrt(diff.pow(2) + delta ** 2) - delta
         offset_sum = offset.sum(dim=-1).clamp_min(1e-8)
 
 
@@ -429,7 +415,7 @@ class RADAR(nn.Module):
             coords = self._get_coordinate_grid(seqlen, x.device)
             coords = coords.unsqueeze(0).expand(bs, -1, -1)
 
-            weights_sequences = weights_sequences.to(device=x.device, dtype=coords.dtype)
+            weights_sequences = weights_sequences.to(device=x.device)
             offset_pos = torch.sum(coords * weights_sequences, dim=1, keepdim=True)
 
             r = coords - offset_pos
@@ -453,9 +439,7 @@ class RADAR(nn.Module):
                     ]
                 )
         
-        phi = torch.stack(phi, dim = - 1).to(dtype = dtype)
-
-        return phi
+        return torch.stack(phi, dim=-1)
 
     def _get_coordinate_grid(self, seqlen: int, device: torch.device) -> torch.Tensor:
 
@@ -487,12 +471,8 @@ class RADAR(nn.Module):
             position-modulated tokens
         """
 
-        dtype = token_patch_emb.dtype
-
         # 1) aggregate -> (_, anchor_values, weights)
         _, anchor_values, weights = self.aggregator(token_patch_emb)
-        anchor_values = anchor_values.to(dtype = dtype)
-        weights = weights.to(dtype=dtype)
 
         # 2) compute phi offsets
         phi_offset = self.__compute_single_patch_phi(
@@ -503,6 +483,7 @@ class RADAR(nn.Module):
 
         # 3) project to s and b
         proj = self.projection_phi(phi_offset)  # (B, N, 2*D)
+
         s = proj[:, :, :self.token_hid_dim]
         b = proj[:, :, self.token_hid_dim:]
 
@@ -547,4 +528,4 @@ class PFIM(nn.Module):
         else:
             scaled_patch_embeddings = self.aggregator(token_patch_emb) # (bs, seqlen, ftrdim)
         
-        return scaled_patch_embeddings.to(dtype = dtype)
+        return scaled_patch_embeddings
