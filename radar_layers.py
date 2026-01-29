@@ -172,7 +172,7 @@ class AggregateSequenceGrading(nn.Module):
                                             topk_val= 98 if self.corrupt_imp_weights else None
                                             ) # (batch_size, seq_len)
 
-        vector_values = vector_values.to(dtype = dtype)                                            
+                                                    
         
         if self.aggregate_method == 'entropy':
             # Doing this negation to ensure high entropy values will be scaled down aggresively
@@ -186,6 +186,13 @@ class AggregateSequenceGrading(nn.Module):
                                                  x = x
                                                  )
         
+
+        # most operations benefit from fp32 so using it for operations
+        # post which casting back for stable execution
+        vector_values = vector_values.to(dtype = dtype)
+        anchor_vectors = anchor_vectors.to(dtype = dtype)
+
+
         # Compute distances from the maximum vector
         distances = self.__compute_distances(x, anchor_vectors)
 
