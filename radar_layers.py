@@ -166,10 +166,13 @@ class AggregateSequenceGrading(nn.Module):
         """
         # Aggregate vectors of original image/ patch embeddings. ex: l2 norm, entropy-based, softmax, max-min etc
         # (bs, seqlen)
-        vector_values = self.__get_vector_agg(x=x,
+        dtype = x.dtype
+        vector_values = self.__get_vector_agg(x=x.float(),
                                             smooth_topk=self.corrupt_imp_weights,
                                             topk_val= 98 if self.corrupt_imp_weights else None
                                             ) # (batch_size, seq_len)
+
+        vector_values = vector_values.to(dtype = dtype)                                            
         
         if self.aggregate_method == 'entropy':
             # Doing this negation to ensure high entropy values will be scaled down aggresively
