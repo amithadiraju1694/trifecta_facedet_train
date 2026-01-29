@@ -374,8 +374,8 @@ class RADAR(nn.Module):
         )
 
         # FiLM-like scale & shift params
-        self.alpha = nn.Parameter(torch.tensor(1e-3, dtype=torch.float32))
-        self.gamma = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
+        self.alpha = nn.Parameter(torch.tensor(1e-3))
+        self.gamma = nn.Parameter(torch.tensor(0.0))
         self._coords_cache = {}
 
     def __compute_single_patch_phi(self,
@@ -397,6 +397,7 @@ class RADAR(nn.Module):
         """
     
         bs, seqlen, _ = x.shape
+        dtype = x.dtype
 
         # stable offset sum computation
         delta = 1e-3
@@ -424,6 +425,7 @@ class RADAR(nn.Module):
 
             # Extract or compute grid, saves FLOPs if extracted, torch.meshgrid+arange is slow
             # normalized grid coords in [0,1]
+            # TODO: Send x's original dtype as well to avoid data type mismatches
             coords = self._get_coordinate_grid(seqlen, x.device)
             coords = coords.unsqueeze(0).expand(bs, -1, -1)
 
@@ -451,7 +453,7 @@ class RADAR(nn.Module):
                     ]
                 )
         
-        phi = torch.stack(phi, dim = - 1)
+        phi = torch.stack(phi, dim = - 1).to(dtype = dtype)
 
         return phi
 
@@ -468,8 +470,8 @@ class RADAR(nn.Module):
                 h -= 1
             w = seqlen // h
             yy, xx = torch.meshgrid(
-                torch.arange(h, dtype=torch.float32),
-                torch.arange(w, dtype=torch.float32),
+                torch.arange(h),
+                torch.arange(w),
                 indexing='ij'
             )
             coordsi = torch.stack([(xx + 0.5) / w, (yy + 0.5) / h], dim=-1).reshape(-1, 2)
@@ -485,8 +487,12 @@ class RADAR(nn.Module):
             position-modulated tokens
         """
 
+        dtype = token_patch_emb.dtype
+
         # 1) aggregate -> (_, anchor_values, weights)
         _, anchor_values, weights = self.aggregator(token_patch_emb)
+        anchor_values = anchor_values.to(dtype = dtype)
+        weights = weights.to(dtype=dtype)
 
         # 2) compute phi offsets
         phi_offset = self.__compute_single_patch_phi(
@@ -533,6 +539,7 @@ class PFIM(nn.Module):
 
     def forward(self, token_patch_emb: torch.Tensor):
         
+        dtype = token_patch_emb.dtype
 
         if self.return_anchors:
             # Returns tuple if return_anchors=True, else just one
@@ -540,4 +547,4 @@ class PFIM(nn.Module):
         else:
             scaled_patch_embeddings = self.aggregator(token_patch_emb) # (bs, seqlen, ftrdim)
         
-        return scaled_patch_embeddings
+        return scaled_patch_embeddings.to(dtype = dtype)
