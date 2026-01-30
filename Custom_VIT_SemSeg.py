@@ -11,108 +11,16 @@ import math
 from typing import Tuple, Optional, Union
 from peft import LoraConfig, get_peft_model, TaskType
 
-from helpers import (
-    get_vector_agg,
-    get_anchor_vectors,
-    compute_single_patch_phi
-)
-from Custom_VIT import (
+from common_layers import (
     PEG,
-    AggregateSequenceGrading,
-    DecompSequenceGrading
+    ConViTHead
+)
+from radar_layers import (
+    RADAR,
+    PFIM
 )
 
 
-
-class GPSA(nn.Module):
-    """
-    Gated Positional Self-Attention (ConViT-style) operating on patch tokens.
-    Combines content attention with a learnable locality prior over 2D positions:
-        Attn = softmax( λ * (QK^T / sqrt(dh)) + (1-λ) * P )
-    where P encodes relative 2D distances (Gaussian kernel with learnable scale).
-    """
-    def __init__(self, dim, num_heads=6, locality_strength=1.0, dropout=0.0):
-        super().__init__()
-        assert dim % num_heads == 0
-        self.h = num_heads
-        self.dh = dim // num_heads
-
-        # Content projections
-        self.q = nn.Linear(dim, dim, bias=False)
-        self.k = nn.Linear(dim, dim, bias=False)
-        self.v = nn.Linear(dim, dim, bias=False)
-        self.proj = nn.Linear(dim, dim, bias=False)
-
-        # Gating between content vs locality (λ in (0,1))
-        self.logit_lambda = nn.Parameter(torch.zeros(1))      # λ = sigmoid(...)
-        # Locality scale (Gaussian width)
-        self.log_sigma = nn.Parameter(torch.log(torch.tensor(locality_strength)))
-
-        self.attn_drop = nn.Dropout(dropout)
-        self.proj_drop = nn.Dropout(dropout)
-
-    @staticmethod
-    def _rel_pos_kernel(H, W, device, sigma):
-        # (N,2) coordinate grid
-        ys, xs = torch.meshgrid(
-            torch.arange(H, device=device), torch.arange(W, device=device), indexing="ij"
-        )
-        coords = torch.stack([ys, xs], dim=-1).view(-1, 2).float()  # (N,2)
-        # Pairwise squared distances
-        diff = coords[:, None, :] - coords[None, :, :]               # (N,N,2)
-        dist2 = (diff ** 2).sum(-1)                                  # (N,N)
-        # Gaussian kernel
-        P = torch.exp(-dist2 / (2 * sigma * sigma))                  # (N,N)
-        return P
-
-    def forward(self, x, H, W):
-        """
-        x: (B, N, D) patch tokens (NO CLS)
-        H,W: grid size (N = H*W)
-        """
-        B, N, D = x.shape
-        q = self.q(x).view(B, N, self.h, self.dh).transpose(1, 2)    # (B,h,N,dh)
-        k = self.k(x).view(B, N, self.h, self.dh).transpose(1, 2)    # (B,h,N,dh)
-        v = self.v(x).view(B, N, self.h, self.dh).transpose(1, 2)    # (B,h,N,dh)
-
-        # Content logits
-        content = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.dh)  # (B,h,N,N)
-
-        # Locality prior P shared across heads (compute once per device/grid)
-        sigma = F.softplus(self.log_sigma) + 1e-6
-        P = self._rel_pos_kernel(H, W, x.device, sigma)              # (N,N)
-        P = P.unsqueeze(0).unsqueeze(0).expand(B, self.h, N, N)      # (B,h,N,N)
-
-        # Gating
-        lam = torch.sigmoid(self.logit_lambda)                       # scalar
-        logits = lam * content + (1.0 - lam) * P
-
-        attn = logits.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-        out = torch.matmul(attn, v)                                  # (B,h,N,dh)
-        out = out.transpose(1, 2).contiguous().view(B, N, D)         # (B,N,D)
-        out = self.proj_drop(self.proj(out))
-        return out
-
-class ConViTHead(nn.Module):
-    """
-    Minimal ConViT-style head: LN -> GPSA -> LN -> MLP, width-preserving.
-    """
-    def __init__(self, dim, num_heads=6, mlp_ratio=4.0, drop=0.0):
-        super().__init__()
-        self.ln1 = nn.LayerNorm(dim)
-        self.gpsa = GPSA(dim, num_heads=num_heads, dropout=drop)
-        self.ln2 = nn.LayerNorm(dim)
-        hidden = int(dim * mlp_ratio)
-        self.mlp = nn.Sequential(
-            nn.Linear(dim, hidden), nn.GELU(), nn.Dropout(drop),
-            nn.Linear(hidden, dim), nn.Dropout(drop),
-        )
-
-    def forward(self, x, H, W):
-        x = x + self.gpsa(self.ln1(x), H, W)
-        x = x + self.mlp(self.ln2(x))
-        return x
 
 class ViTWithConvGPSAHead(nn.Module):
     """
@@ -646,14 +554,6 @@ class ViTRADAR_SoftDegrade_SemSeg(nn.Module):
 
         # Ensuring strict eval mode of backbone
         self.vit.eval()
-
-        self.distance_metric = distance_metric
-        self.aggregate_method = aggregate_method
-        self.seq_select_method= seq_select_method
-        self.aggregate_dim=aggregate_dim
-        self.norm_type = norm_type
-        self.return_anchors = return_anchors
-        self.corrupt_imp_weights=corrupt_imp_weights
         self.transpose_conv = transpose_convolutions
         self.hidden = self.vit.config.hidden_size
 
@@ -662,15 +562,15 @@ class ViTRADAR_SoftDegrade_SemSeg(nn.Module):
         self.perc_ape = perc_ape
 
         # norm is L2 Norm
-        self.custom_pos_encoding = AggregateSequenceGrading(
-            distance_metric=self.distance_metric,
-            aggregate_method=self.aggregate_method, # l2- Norm, entropy
-            seq_select_method = self.seq_select_method,
-            aggregate_dim = self.aggregate_dim,
-            norm_type = self.norm_type,
-            return_anchors = self.return_anchors,
-            corrupt_imp_weights = self.corrupt_imp_weights
-        )
+        self.pfim_layer = PFIM(
+                                distance_metric = distance_metric,
+                                aggregate_method = aggregate_method,
+                                seq_select_method = seq_select_method,
+                                aggregate_dim = aggregate_dim,
+                                norm_type = norm_type,
+                                return_anchors = return_anchors,
+                                corrupt_imp_weights = corrupt_imp_weights
+                              )
 
         # Task-Specific Semantic Segmentation layers
         if self.transpose_conv:
@@ -735,22 +635,17 @@ class ViTRADAR_SoftDegrade_SemSeg(nn.Module):
         pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
         """
 
+        # TODO: On frozen backbone layers pre-compute patch embeddings on first epoch
+        # so that 2nd epoch can use from cache rather than re-computing patch embeddings
         with torch.no_grad():
             # patch_emb_output -> (batch_size, seq_len, hidden_size)
             ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
-
-        
-        if self.return_anchors:
-            # Returns tuple if return_anchors=True, else just one
-            _, custom_pos_encodings, _ = self.custom_pos_encoding(patch_emb_output) # (bs, seqlen, ftrdim)
-        else:
-            custom_pos_encodings = self.custom_pos_encoding(patch_emb_output) # (bs, seqlen, ftrdim)
-        
-        custom_pos_encodings = torch.cat([cls_token, custom_pos_encodings], dim = 1)
+   
+        modulated_patch_embeddings = self.pfim_layer(patch_emb_output)
+        custom_pos_encodings = torch.cat([cls_token, modulated_patch_embeddings], dim = 1)
         
         # Add both positional encodings
         position_encoded = custom_pos_encodings + (self.perc_ape * ViT_stat_pos_emb) # (batch_size, seq_len, hidden_size)
-        
         position_encoded = self.vit.embeddings.dropout(position_encoded) # (batch_size, seq_len+1, hidden_size)
 
         # Continue with the encoder
@@ -815,49 +710,22 @@ class ViTRADAR_SoftAnchor_v1_SemSeg(nn.Module):
             param.requires_grad = False
         
         self.vit.eval()
-
-        self.distance_metric = distance_metric
-        self.aggregate_method = aggregate_method
-        self.seq_select_method = seq_select_method
-        self.add_coordinates = add_coordinates
-        self.K = K
-        self.aggregate_dim = aggregate_dim
-        self.norm_type = norm_type
-        self.return_anchors = return_anchors
-        self.add_coordinates = add_coordinates # Whether to get co-ordinates output when dealing with phi vector computation
         self.perc_ape = perc_ape # Percentage of Absolute Positional Encoding to be used in Forward pass
-        self.corrupt_imp_weights = corrupt_imp_weights
         self.transpose_conv = transpose_convolutions
         self.hidden = self.vit.config.hidden_size
 
-        # These are learnable params that govern how much % of s,b will be added to patch embeddings before sending to encoder.
-        self.alpha = nn.Parameter(torch.tensor(0.1, dtype = torch.float32))  # Trainable scalar parameter
-        self.gamma = nn.Parameter(torch.tensor(0.1, dtype = torch.float32))  # Trainable scalar parameter
-
-        # Custom aggregation on top of patch embeddings.
-        self.custom_pos_encoding = AggregateSequenceGrading(
-            distance_metric=self.distance_metric,
-            aggregate_method=self.aggregate_method,
-            seq_select_method = self.seq_select_method,
-            aggregate_dim=self.aggregate_dim,
-            norm_type=self.norm_type,
-            return_anchors=self.return_anchors,
-            corrupt_imp_weights = self.corrupt_imp_weights
-        )
-
-        # Computing output dimensions of Phi features
-        if self.add_coordinates:
-            # co-ordinates = 4, non-coords = 3 = 7
-            # 6K
-            phi_out_features = 7 + 6 * K
-        else:
-            phi_out_features = 3 + 2 * K
-
-        # Linear sequential layers to project phi onto new dimensions
-        self.projection_phi = nn.Sequential(
-            nn.Linear(in_features = phi_out_features, out_features=128),
-            nn.Linear(in_features = 128, out_features = self.vit.config.hidden_size*2)
-        )
+        self.radar_layer = RADAR(
+                                    token_hid_dim = self.hidden,
+                                    K = K,
+                                    add_coordinates = add_coordinates,
+                                    distance_metric = distance_metric,
+                                    aggregate_method = aggregate_method,
+                                    seq_select_method=seq_select_method,
+                                    aggregate_dim=aggregate_dim,
+                                    norm_type=norm_type,
+                                    return_anchors=return_anchors,
+                                    corrupt_imp_weights=corrupt_imp_weights,
+                                )
 
         # Task-Specific Semantic Segmentation layers
         if self.transpose_conv:
@@ -922,34 +790,16 @@ class ViTRADAR_SoftAnchor_v1_SemSeg(nn.Module):
         """
         pixel_values is a 4D image tensor of shape ( batch_size, num_channels, height, width )
         """
-
+        # TODO: Pre-compute first epoch of patch embeddings and cache
         with torch.no_grad():
             # patch_emb_out - > (batch_size, seq_len, hidden_size)
             ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
 
-
-        # (bts, seq_len, 1) or (bts, seq_len, feature_dim)
-        _, anchor_values, weights = self.custom_pos_encoding(patch_emb_output) # distances, anchor values, weights
-
-        # (bs, seqlen, num_phi_ftr)
-        phi_offset = compute_single_patch_phi(anchor_values=anchor_values,
-                                            x = patch_emb_output,
-                                            K = self.K,
-                                            add_coords=self.add_coordinates,
-                                            weights_sequences = weights
-                                                        )
-        
-        custom_pos_encodings = self.projection_phi(phi_offset) # (bs, seqlen, ftrdim*2)
-
-        s = custom_pos_encodings[:, :, :self.vit.config.hidden_size] # (bs, seqlen, ftrdim)
-        b = custom_pos_encodings[:, :, self.vit.config.hidden_size: ] # (bs, seqlen, ftrdim)
-
-        patch_emb_output = patch_emb_output * (1 + self.alpha * s) + self.gamma * b
-        patch_emb_output = torch.cat([cls_token, patch_emb_output], dim = 1)
+        modulated_patch_embeddings = self.radar_layer(patch_emb_output)
+        patch_emb_output = torch.cat([cls_token, modulated_patch_embeddings], dim = 1)
 
         # A Scalar percentage for using Absolute PEs is added to facilitate comparison with PEG.
         pos_encoded = patch_emb_output + ( self.perc_ape * ViT_stat_pos_emb )
-
         position_encoded = self.vit.embeddings.dropout(pos_encoded) # (batch_size, seq_len+1, hidden_size)
 
         # Continue with the encoder
