@@ -3,6 +3,7 @@ import random
 import yaml
 import numpy as np
 import wandb
+import torch.distributed as dist
 from torch.utils.data import (
     DataLoader,
     TensorDataset,
@@ -12,9 +13,10 @@ from torch.utils.data import (
 
 from torchvision.transforms import v2 as transforms
 from torchvision import datasets
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 import os
 from helpers_profiling import *
+from typing import Tuple, Optional, Dict, Any
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406); IMAGENET_STD  = (0.229, 0.224, 0.225)
 
@@ -67,6 +69,116 @@ class OxfordPetSeg(Dataset):
         mask = mask.squeeze(0).to(torch.long)
         
         return img, mask
+
+# Early stopping class for single node training
+class EarlyStopping_SA:
+    """
+    Simple EarlyStopping for plain PyTorch training loops.
+    Saves the best checkpoint and stops after `patience` non-improving epochs.
+    """
+
+    def __init__(self,
+                 patience: int = 10,
+                 min_delta: float = 0.0,
+                 mode: str = "min",
+                 ckpt_path: str = "best_by_metric.pth"):
+        if mode not in ("min", "max"):
+            raise ValueError("mode must be 'min' or 'max'")
+        self.patience = int(patience)
+        self.min_delta = float(min_delta)
+        self.mode = mode
+        self.ckpt_path = ckpt_path
+
+        self.best = float("inf") if mode == "min" else -float("inf")
+        self.num_bad_epochs = 0
+
+    def _is_improvement(self, metric_value: float) -> bool:
+        if self.mode == "min":
+            return metric_value < (self.best - self.min_delta)
+        return metric_value > (self.best + self.min_delta)
+
+    def step(self,
+             metric_value: float,
+             *,
+             epoch: int,
+             model,
+             optimizer=None,
+             extra: Optional[Dict[str, Any]] = None) -> bool:
+        metric_value = float(metric_value)
+        if self._is_improvement(metric_value):
+            self.best = metric_value
+            self.num_bad_epochs = 0
+
+            payload: Dict[str, Any] = {
+                "epoch": epoch,
+                "model_state": model.state_dict(),
+                "metric": metric_value,
+            }
+            if optimizer is not None:
+                payload["optimizer_state"] = optimizer.state_dict()
+            if extra:
+                payload.update(extra)
+
+            torch.save(payload, self.ckpt_path)
+            return False
+
+        self.num_bad_epochs += 1
+        return self.num_bad_epochs >= self.patience
+
+# Early stopping class for multi node training
+class EarlyStopping_MW:
+    """
+    Simple EarlyStopping for plain PyTorch training loops.
+    Saves the best checkpoint and stops after `patience` non-improving epochs.
+    """
+
+    def __init__(self,
+                 patience: int = 10,
+                 min_delta: float = 0.0,
+                 mode: str = "min",
+                 ckpt_path: str = "best_by_metric.pth"):
+        if mode not in ("min", "max"):
+            raise ValueError("mode must be 'min' or 'max'")
+        self.patience = int(patience)
+        self.min_delta = float(min_delta)
+        self.mode = mode
+        self.ckpt_path = ckpt_path
+
+        self.best = float("inf") if mode == "min" else -float("inf")
+        self.num_bad_epochs = 0
+
+    def _is_improvement(self, metric_value: float) -> bool:
+        if self.mode == "min":
+            return metric_value < (self.best - self.min_delta)
+        return metric_value > (self.best + self.min_delta)
+
+    def step(self,
+             metric_value: float,
+             *,
+             epoch: int,
+             model,
+             optimizer=None,
+             extra: Optional[Dict[str, Any]] = None) -> bool:
+        metric_value = float(metric_value)
+        if self._is_improvement(metric_value):
+            self.best = metric_value
+            self.num_bad_epochs = 0
+
+            payload: Dict[str, Any] = {
+                "epoch": epoch,
+                "model_state": model.state_dict(),
+                "metric": metric_value,
+            }
+            if optimizer is not None:
+                payload["optimizer_state"] = optimizer.state_dict()
+            if extra:
+                payload.update(extra)
+
+            torch.save(payload, self.ckpt_path)
+            return False
+
+        self.num_bad_epochs += 1
+        return self.num_bad_epochs >= self.patience
 
 
 def get_cifar10_loaders_optimized(data_dir: str='./data') -> Tuple[torch.utils.data.Dataset, torch.utils.data.Dataset]:
@@ -356,7 +468,10 @@ def profile_models(model, example_input, total_tr_rows, batch_size, num_epochs):
 
 
 def set_system_seed(seed_num):
+    os.environ["PYTHONHASHSEED"] = str(seed_num)
     torch.manual_seed(seed_num)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed_num)
     random.seed(seed_num)
     np.random.seed(seed_num)
 
@@ -434,4 +549,21 @@ def get_project_details(yaml_config_file, exp_name):
         return loaded_config[exp_name]
     else:
         raise Exception("Provided experiment doesn't exist")
+
+def _get_world_size() -> int:
+    return int(os.environ.get("WORLD_SIZE", "1"))
+
+def _ddp_init_if_needed_v2(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    
+    acc = torch.accelerator.current_accelerator()
+    backend = torch.distributed.get_default_backend_for_device(acc)
+    # initialize process group.
+    dist.init_process_group(backend, rank = rank, world_size = world_size)
+
+def _ddp_broadcast_stop(should_stop: bool, device: torch.device) -> bool:
+    stop_tensor = torch.tensor([1 if should_stop else 0], device=device, dtype=torch.int32)
+    dist.broadcast(stop_tensor, src=0)
+    return bool(stop_tensor.item())
 

@@ -6,3 +6,4 @@ wandb==0.18.7
 numpy==1.23.5
 fvcore==0.1.5.post20221221
 peft==0.18.0
+webdataset

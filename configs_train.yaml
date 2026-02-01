@@ -240,3 +240,41 @@ vit_mask2form_semseg:
   project_name: ViT_RADAR_benchmarks_SemSeg
   run_name: ViT_Mask2Form_NTransp
   secret_key: 
+
+vit_pfim:
+  model_config:
+    num_out: 100
+    lr: 1e-3
+    weight_decay: 0.1
+    distance_metric: NA
+    aggregate_method: norm_softmax
+    seq_select_method: safe_pow_gate
+    aggregate_dim: 2
+    norm_type: 2
+    return_anchors: True
+    perc_ape: 1.0
+    corrupt_imp_weights: False
+  
+  train_config:
+    system_seed: 108
+    num_epochs: 2
+    task: class
+    model_name: vit_lora
+    use_amp: True
+    save_every: 3
+    eval_every: 5
+    data_loader_workers: 8
+    grad_norm_clip: 1.0
+    patience: 10
+    max_epochs: 10
+    batch_size: 216
+    dataset_hf_url: hf://datasets/timm/imagenet-1k-wds
+    snapshot_path: test_snapshot.pt
+  
+  wandb_config:
+    log_metrics: False
+    log_model: False
+    team_name: amith-adiraju-self
+    project_name: 
+    run_name: 
+    secret_key: 
