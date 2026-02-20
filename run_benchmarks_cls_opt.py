@@ -2,121 +2,34 @@ import os
 import sys
 import torch
 from torch.distributed import init_process_group, destroy_process_group
+from torch.utils.data import DataLoader, DistributedSampler
+import torch.distributed as dist
 from distributed_trainer import Trainer
 from types import SimpleNamespace
 import hashlib
+import inspect
 from helpers import (
     profile_models,
     get_project_details,
-    set_system_seed
+    set_system_seed,
+    WiderFaceTrain,
+    collate_widerface,
                     )
 
-from Custom_VIT import (
-    ViTRADAR_SoftDegrade,
-    ViTRADAR_SoftAnchor_v1,
-    ViTWithPEG,
-    ViTWithStaticPositionalEncoding,
-    ViTLoRAClassifier,
-    ViTWithSetTransformerHead,
-    ViTWithConvGPSAHead
-                        )
 
 from Custom_VIT_SemSeg import (
-    ViTRADAR_SoftDegrade_SemSeg,
     ViTRADAR_SoftAnchor_v1_SemSeg,
-    ViTWithPEG_SemSeg,
     ViTLoRA_SemSeg,
-    ViTWithMask2FormerSeg,
-    ViTWithSegFormer
+    ViTWithSegFormer,
+    ViTFaceDetectorPlain,
+    ViTFaceDetectorRADAR
                                 )
 
-def get_model_class(model_name, model_config):
-    
-    if model_name == 'radar_softdegrade':
-        model = ViTRADAR_SoftDegrade(
-            distance_metric=model_config['distance_metric'],
-            aggregate_method=model_config['aggregate_method'],
-            seq_select_method = model_config['seq_select_method'],
-            num_out_classes = model_config['num_out'],
-            aggregate_dim = model_config['aggregate_dim'],
-            norm_type = model_config['norm_type'],
-            return_anchors = model_config['return_anchors'],
-            perc_ape = model_config['perc_ape'],
-            corrupt_imp_weights=model_config['corrupt_imp_weights']
-        )
 
-    if model_name == 'radar_softanchor_v1':
-        model = ViTRADAR_SoftAnchor_v1(
-            distance_metric=model_config['distance_metric'],
-            aggregate_method=model_config['aggregate_method'],
-            seq_select_method = model_config['seq_select_method'],
-            num_out_classes = model_config['num_out'],
-            add_coordinates = model_config['add_coordinates'],
-            K = model_config['K'],
-            aggregate_dim = model_config['aggregate_dim'],
-            norm_type = model_config['norm_type'],
-            return_anchors = model_config['return_anchors'],
-            perc_ape=model_config['perc_ape'],
-            corrupt_imp_weights=model_config['corrupt_imp_weights']
-                                        )
-    
-    if model_name == 'single_peg_cpvt':
-        model = ViTWithPEG(
-            num_labels=model_config['num_out'],
-            perc_ape = model_config['perc_ape'],
-            k = model_config['k']
-        )
-
-    if model_name == 'static':
-        
-        model = ViTWithStaticPositionalEncoding(
-            num_out_classes=model_config['num_out']
-        )
-    
-    if model_name == "vit_lora":
-        model = ViTLoRAClassifier(
-                 num_out_classes = model_config['num_out'],
-                 r = model_config['r'],
-                 lora_alpha = model_config['lora_alpha'],
-                 lora_dropout = 0.05,
-                 target_module = model_config["target_module"]
-                            )
-    
-    if model_name == "vit_settrans":
-
-        model = ViTWithSetTransformerHead(
-                 num_out_classes = model_config['num_out'],
-                 m_inducing = model_config["m_inducing"],
-                 n_heads = model_config["n_heads"]
-                            )
-    
-    if model_name == "vit_convgpsa":
-
-        model = ViTWithConvGPSAHead(
-            num_out_classes=model_config['num_out'],
-            convit_heads=model_config['convit_heads'],
-            mlp_ratio=model_config['mlp_ratio']
-        )
-
-    return model
 
 def get_model_semseg(model_name, model_config):
-    
-    if model_name == 'radar_softdegrade':
-        model = ViTRADAR_SoftDegrade_SemSeg(
-            distance_metric=model_config['distance_metric'],
-            aggregate_method=model_config['aggregate_method'],
-            seq_select_method = model_config['seq_select_method'],
-
-            num_out_classes = model_config['num_out'],
-            transpose_convolutions = model_config['transpose_convolutions'],
-            
-            aggregate_dim = model_config['aggregate_dim'],
-            norm_type = model_config['norm_type'],
-            return_anchors = model_config['return_anchors'],
-            perc_ape = model_config['perc_ape'],
-            corrupt_imp_weights=model_config['corrupt_imp_weights']
-        )
+    model_config = _cfg_to_dict(model_config)
+    model = None
 
     if model_name == 'radar_softanchor_v1':
         model = ViTRADAR_SoftAnchor_v1_SemSeg(
@@ -137,14 +50,6 @@ def get_model_semseg(model_name, model_config):
             corrupt_imp_weights=model_config['corrupt_imp_weights']
                                         )
     
-    if model_name == 'single_peg_cpvt':
-        model = ViTWithPEG_SemSeg(
-            num_out_classes = model_config['num_out'],
-            transpose_convolutions = model_config['transpose_convolutions'],
-
-            perc_ape = model_config['perc_ape'],
-            k = model_config['k']
-        )
     
     if model_name == "vit_lora":
         model = ViTLoRA_SemSeg(
@@ -157,13 +62,6 @@ def get_model_semseg(model_name, model_config):
                  target_module = model_config["target_module"]
                             )
     
-    if model_name == "vit_mask2form":
-
-        model = ViTWithMask2FormerSeg(
-                 num_out_classes = model_config['num_out'],
-                 transpose_convolutions = model_config['transpose_convolutions'],
-                            )
-    
     if model_name == "vit_segform":
 
         model = ViTWithSegFormer(
@@ -171,7 +69,63 @@ def get_model_semseg(model_name, model_config):
             transpose_convolutions = model_config['transpose_convolutions'],
         )
 
+    if model is None:
+        raise ValueError(f"Unsupported semseg model_name: {model_name}")
     return model
+
+
+def _cfg_to_dict(model_config):
+    if isinstance(model_config, dict):
+        return model_config
+    if isinstance(model_config, SimpleNamespace):
+        return vars(model_config)
+    try:
+        return dict(model_config)
+    except Exception:
+        return vars(model_config)
+
+
+def _build_model_from_signature(model_cls, model_config):
+    cfg = _cfg_to_dict(model_config)
+    sig = inspect.signature(model_cls.__init__)
+    kwargs = {}
+    for key in sig.parameters:
+        if key == "self":
+            continue
+        if key in cfg:
+            kwargs[key] = cfg[key]
+    return model_cls(**kwargs)
+
+
+def get_model_facedet(exp_name, config):
+    exp_key = str(exp_name).lower().strip()
+    model_config = getattr(config, "model_config", config)
+
+    if exp_key == "vit_radar_fd" or ("radar" in exp_key and exp_key.endswith("_fd")):
+        if ViTFaceDetectorRADAR is None:
+            raise ImportError("ViTFaceDetectorRADAR not found in Custom_VIT_SemSeg.py.")
+        return _build_model_from_signature(ViTFaceDetectorRADAR, model_config)
+
+    if exp_key == "vit_plain_fd" or ("plain" in exp_key and exp_key.endswith("_fd")):
+        if ViTFaceDetectorPlain is None:
+            raise ImportError("ViTFaceDetectorPlain not found in Custom_VIT_SemSeg.py.")
+        return _build_model_from_signature(ViTFaceDetectorPlain, model_config)
+
+    # Backward-compatible fallback if header naming is not yet updated.
+    train_name = str(getattr(getattr(config, "train_config", None), "model_name", "")).lower()
+    if train_name in {"facedet_radar", "vitfacedet_radar", "vit_face_detector_radar", "radar_softanchor_v1"}:
+        if ViTFaceDetectorRADAR is None:
+            raise ImportError("ViTFaceDetectorRADAR not found in Custom_VIT_SemSeg.py.")
+        return _build_model_from_signature(ViTFaceDetectorRADAR, model_config)
+    if train_name in {"facedet_plain", "vitfacedet_plain", "vit_face_detector_plain"}:
+        if ViTFaceDetectorPlain is None:
+            raise ImportError("ViTFaceDetectorPlain not found in Custom_VIT_SemSeg.py.")
+        return _build_model_from_signature(ViTFaceDetectorPlain, model_config)
+
+    raise ValueError(
+        f"Unsupported facedet experiment header: {exp_name}. "
+        "Use headers like 'vit_radar_fd' or 'vit_plain_fd'."
+    )
 
 def verify_min_gpu_count(min_gpus: int = 2) -> bool:
     has_gpu = torch.accelerator.is_available()
@@ -275,6 +229,7 @@ def get_urls_from_hf(dataset_hf_url:str, split_val:bool, val_fraction: float = 0
 
     return train_shards, test_shards, val_shards
 
+# This may be redundant given CLS usecase is removed
 def build_streaming_wds_cls_loaders(
     train_shards,
     test_shards,
@@ -365,19 +320,82 @@ def build_streaming_wds_cls_loaders(
     test_loader = _make_loader(test_ds)
     return train_loader, val_loader, test_loader
 
-def main(yaml_project_name: str):
+
+def build_widerface_ddp_loaders(
+    data_root: str,
+    batch_size: int,
+    num_workers: int,
+    image_size: int,
+    download: bool = True,
+):
+    dist_init = dist.is_available() and dist.is_initialized()
+    rank = dist.get_rank() if dist_init else 0
+
+    if dist_init and download:
+        if rank == 0:
+            # Download once to avoid multiple ranks writing same files.
+            _ = WiderFaceTrain(root=data_root, split="train", image_size=image_size, download=True)
+            _ = WiderFaceTrain(root=data_root, split="val", image_size=image_size, download=True)
+        dist.barrier()
+        download = False
+
+    train_ds = WiderFaceTrain(root=data_root, split="train", image_size=image_size, download=download)
+    val_ds = WiderFaceTrain(root=data_root, split="val", image_size=image_size, download=download)
+
+    train_sampler = None
+    val_sampler = None
+    if dist_init:
+        world_size = dist.get_world_size()
+        train_sampler = DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True)
+        val_sampler = DistributedSampler(val_ds, num_replicas=world_size, rank=rank, shuffle=False)
+
+    loader_common = {
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "pin_memory": torch.cuda.is_available(),
+        "persistent_workers": (num_workers > 0),
+        "collate_fn": collate_widerface,
+    }
+
+    train_loader = DataLoader(
+        train_ds,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        **loader_common,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        shuffle=False,
+        sampler=val_sampler,
+        **loader_common,
+    )
+    # WIDER FACE test split does not provide boxes; use val split as test/eval.
+    test_loader = val_loader
+    return train_loader, val_loader, test_loader
+
+def main(yaml_config_file: str, exp_name: str):
     ddp_setup()
 
-    config = get_project_details(yaml_project_name)
+    config = _as_namespace(get_project_details(yaml_config_file, exp_name))
     seed = int(getattr(config.train_config, "system_seed", 108))
     rank = int(os.environ.get("RANK", "0"))
     set_system_seed(seed + rank)
 
-    get_model = get_model_class if config.train_config.task == "class" else get_model_semseg
+    task = str(config.train_config.task).lower()
 
-    model = get_model(model_name=config.train_config.model_name,
-                      model_config=config.model_config
-                      )
+    if task == "semseg":
+        get_model = get_model_semseg
+    elif task == "facedet":
+        get_model = get_model_facedet
+    else:
+        raise ValueError(f"Unsupported task: {config.train_config.task}")
+
+    if task == "facedet":
+        model = get_model(exp_name=exp_name, config=config)
+    else:
+        model = get_model(model_name=config.train_config.model_name,
+                          model_config=config.model_config
+                          )
     
     num_workers = int(getattr(config.train_config, "data_loader_workers", "8"))
     split_val = bool(getattr(config.train_config, "split_val", True))
@@ -386,38 +404,47 @@ def main(yaml_project_name: str):
     image_size = int(getattr(config.train_config, "image_size", 224))
     shuffle_buf = int(getattr(config.train_config, "shuffle_buf", 10_000))
 
-    dataset_hf_url = getattr(config.train_config, "dataset_hf_url", None)
-    if not dataset_hf_url:
-        raise ValueError("Missing dataset_hf_url. Set train_config.dataset_hf_url or env WDS_DATASET_HF_URL.")
+    if task == "facedet":
+        data_root = getattr(config.train_config, 
+                            "dataset_root", None) or getattr(config.train_config,
+                                                              "data_root", None)
+        if not data_root:
+            raise ValueError("Missing dataset_root/data_root for facedet task.")
+        
+        dataset_download = bool(getattr(config.train_config, "dataset_download", True))
 
-    train_shards, test_shards, val_shards = get_urls_from_hf(dataset_hf_url = dataset_hf_url,
-                                                             split_val = split_val,
-                                                             val_fraction = val_fraction,
-                                                             seed=seed)
+        train_dataloader, val_dataloader, test_dataloader = build_widerface_ddp_loaders(
+            data_root=data_root,
+            batch_size=int(config.train_config.batch_size),
+            num_workers=num_workers,
+            image_size=image_size,
+            download=dataset_download,
+        )
     
-    loaders = build_streaming_wds_cls_loaders(
-        train_shards=train_shards,
-        val_shards=val_shards,
-        test_shards=test_shards,
-
-        batch_size=int(config.train_config.batch_size),
-        num_workers=num_workers,
-        split_val=split_val,
-
-        val_fraction=val_fraction,
-        seed=seed,
-        image_size=image_size,
-
-        shuffle_buf=shuffle_buf,
-                                            )
-    
-    # use loaders returned from above function, split accordingly
-    if split_val:
-        train_dataloader, val_dataloader, test_dataloader = loaders
-    
+    # Given that classification is removed from this repo , entire else condition may be redundant 
+    # can be removed.
     else:
-        train_dataloader, test_dataloader = loaders
-        val_dataloader = None
+
+        dataset_hf_url = getattr(config.train_config, "dataset_hf_url", None)
+        if not dataset_hf_url:
+            raise ValueError("Missing dataset_hf_url. Set train_config.dataset_hf_url or env WDS_DATASET_HF_URL.")
+
+        train_shards, test_shards, val_shards = get_urls_from_hf(dataset_hf_url = dataset_hf_url,
+                                                                 split_val = split_val,
+                                                                 val_fraction = val_fraction,
+                                                                 seed=seed)
+        
+        train_dataloader, val_dataloader, test_dataloader = build_streaming_wds_cls_loaders(
+            train_shards=train_shards,
+            val_shards=val_shards,
+            test_shards=test_shards,
+            batch_size=int(config.train_config.batch_size),
+            num_workers=num_workers,
+            image_size=image_size,
+            shuffle_buf=shuffle_buf,
+        )
+        if not split_val:
+            val_dataloader = None
 
     
     trainer = Trainer(
@@ -441,7 +468,9 @@ if __name__ == "__main__":
     if not verify_min_gpu_count(min_gpus=_min_gpu_count):
         print(f"Unable to locate sufficient {_min_gpu_count} gpus to run this example. Exiting.")
         sys.exit()
+
     if len(sys.argv) < 3:
-        print("Usage: torchrun ... run_benchmarks_cls_opt.py <configs_train.yaml>")
+        print("Usage: torchrun ... run_benchmarks_cls_opt.py <configs_train.yaml> <experiment_key>")
         sys.exit(2)
-    main(sys.argv[1])
+
+    main(sys.argv[1], sys.argv[2])

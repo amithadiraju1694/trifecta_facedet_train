@@ -3,12 +3,10 @@ import random
 import yaml
 import numpy as np
 import wandb
-import torch.distributed as dist
 from torch.utils.data import (
     DataLoader,
     TensorDataset,
-    Dataset,
-    random_split
+    Dataset
 )
 
 from torchvision.transforms import v2 as transforms
@@ -16,7 +14,8 @@ from torchvision import datasets
 from typing import Optional, Tuple
 import os
 from helpers_profiling import *
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
+
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406); IMAGENET_STD  = (0.229, 0.224, 0.225)
 
@@ -70,60 +69,80 @@ class OxfordPetSeg(Dataset):
         
         return img, mask
 
-# Early stopping class for single node training
-class EarlyStopping_SA:
-    """
-    Simple EarlyStopping for plain PyTorch training loops.
-    Saves the best checkpoint and stops after `patience` non-improving epochs.
-    """
 
-    def __init__(self,
-                 patience: int = 10,
-                 min_delta: float = 0.0,
-                 mode: str = "min",
-                 ckpt_path: str = "best_by_metric.pth"):
-        if mode not in ("min", "max"):
-            raise ValueError("mode must be 'min' or 'max'")
-        self.patience = int(patience)
-        self.min_delta = float(min_delta)
-        self.mode = mode
-        self.ckpt_path = ckpt_path
+class WiderFaceTrain(Dataset):
+    """WIDER FACE map-style dataset wrapper with resized xyxy boxes."""
 
-        self.best = float("inf") if mode == "min" else -float("inf")
-        self.num_bad_epochs = 0
+    def __init__(self, root: str, split: str = "train", image_size: int = 224, download: bool = True):
+        if split not in ("train", "val"):
+            raise ValueError("WiderFaceTrain supports only 'train' or 'val' splits.")
 
-    def _is_improvement(self, metric_value: float) -> bool:
-        if self.mode == "min":
-            return metric_value < (self.best - self.min_delta)
-        return metric_value > (self.best + self.min_delta)
+        self.image_size = int(image_size)
+        self.split = split
+        self.ds = datasets.WIDERFace(
+            root=root,
+            split=split,
+            download=download,
+            transform=None,
+        )
 
-    def step(self,
-             metric_value: float,
-             *,
-             epoch: int,
-             model,
-             optimizer=None,
-             extra: Optional[Dict[str, Any]] = None) -> bool:
-        metric_value = float(metric_value)
-        if self._is_improvement(metric_value):
-            self.best = metric_value
-            self.num_bad_epochs = 0
+        self.transform = transforms.Compose([
+            transforms.ToImage(),
+            transforms.Resize((self.image_size, self.image_size), antialias=True),
+            transforms.ToDtype(torch.float32, scale=True),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ])
 
-            payload: Dict[str, Any] = {
-                "epoch": epoch,
-                "model_state": model.state_dict(),
-                "metric": metric_value,
-            }
-            if optimizer is not None:
-                payload["optimizer_state"] = optimizer.state_dict()
-            if extra:
-                payload.update(extra)
+    def __len__(self):
+        return len(self.ds)
 
-            torch.save(payload, self.ckpt_path)
-            return False
+    def __getitem__(self, idx: int):
+        img, target_raw = self.ds[idx]
+        orig_w, orig_h = img.size
 
-        self.num_bad_epochs += 1
-        return self.num_bad_epochs >= self.patience
+        img_t = self.transform(img)
+
+        boxes_xywh = target_raw.get("bbox", None)
+        if boxes_xywh is None:
+            boxes = torch.empty((0, 4), dtype=torch.float32)
+            return img_t, boxes
+
+        if not torch.is_tensor(boxes_xywh):
+            boxes_xywh = torch.tensor(boxes_xywh, dtype=torch.float32)
+        boxes_xywh = boxes_xywh.float()
+
+        if boxes_xywh.numel() == 0:
+            boxes = torch.empty((0, 4), dtype=torch.float32)
+            return img_t, boxes
+
+        boxes_xywh = boxes_xywh.view(-1, 4)
+        sx = self.image_size / float(orig_w)
+        sy = self.image_size / float(orig_h)
+
+        x = boxes_xywh[:, 0]
+        y = boxes_xywh[:, 1]
+        w = boxes_xywh[:, 2]
+        h = boxes_xywh[:, 3]
+
+        x1 = x * sx
+        y1 = y * sy
+        x2 = (x + w) * sx
+        y2 = (y + h) * sy
+        boxes = torch.stack([x1, y1, x2, y2], dim=1)
+
+        boxes[:, 0::2] = boxes[:, 0::2].clamp(0, self.image_size - 1)
+        boxes[:, 1::2] = boxes[:, 1::2].clamp(0, self.image_size - 1)
+
+        valid = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+        boxes = boxes[valid]
+        return img_t, boxes
+
+
+def collate_widerface(batch: List[Tuple[torch.Tensor, torch.Tensor]]):
+    images = torch.stack([item[0] for item in batch], dim=0)
+    boxes = [item[1] for item in batch]
+    return images, boxes
+
 
 # Early stopping class for multi node training
 class EarlyStopping_MW:
@@ -180,74 +199,6 @@ class EarlyStopping_MW:
         self.num_bad_epochs += 1
         return self.num_bad_epochs >= self.patience
 
-
-def get_cifar10_loaders_optimized(data_dir: str='./data') -> Tuple[torch.utils.data.Dataset, torch.utils.data.Dataset]:
-
-    """Function that loads CIFAR10 data set from torchvision and applies transforms including resize to 224x224, normalization and augmentations.
-        Normalization uses mean and std computed from CIFAR-10 dataset.
-    """
-
-    # CIFAR-10 mean and std for normalization. computed from training set.
-    mean = (0.4914, 0.4822, 0.4465)
-    std = (0.2470, 0.2435, 0.2616)
-
-    # Training transforms with augmentation and resize to 224x224
-    # TODO: Use Deterministic Horizontal Flip from paper, and may be extend to Deterministic Affine Transform as well.
-    train_transform = transforms.Compose([
-                            transforms.ToImage(),                                       # PIL -> tensor (uint8)
-                            transforms.Resize((224,224), interpolation=transforms.InterpolationMode.BILINEAR, antialias=True),
-                            transforms.RandomHorizontalFlip(),
-                            transforms.RandomAffine(degrees=0, translate=(0.1,0.1), interpolation=transforms.InterpolationMode.BILINEAR),
-                            transforms.ToDtype(torch.float32, scale=True),              # now [0,1]
-                            transforms.Normalize(mean, std),
-                                        ])
-
-    # Test transforms with resize to 224x224
-    test_transform = transforms.Compose([
-        transforms.ToImage(), # PIL -> Tensor fast path
-        transforms.Resize((224, 224), interpolation = transforms.InterpolationMode.BILINEAR),  # Resize to ViT's expected input size
-        transforms.ToDtype(torch.float32, scale=True),
-        transforms.Normalize(mean, std),
-    ])
-
-    # Load datasets
-    train_dataset = datasets.CIFAR10(root=data_dir, train=True, download=True, transform=train_transform)
-    test_dataset = datasets.CIFAR10(root=data_dir, train=False, download=True, transform=test_transform)
-
-    return train_dataset, test_dataset
-
-def get_cifar100_loaders_optimized(data_dir: str='./data') -> Tuple[torch.utils.data.Dataset, torch.utils.data.Dataset]:
-    """Function that loads CIFAR100 data set from torchvision and applies transforms including resize to 224x224, normalization and augmentations.
-        Normalization uses mean and std computed from CIFAR-100 dataset.
-    """
-
-    # CIFAR-100 mean and std for normalization. computed from training set.
-    mean = (0.5071, 0.4867, 0.4408)
-    std = (0.2675, 0.2565, 0.2761)
-
-    # Training transforms with augmentation and resize to 224x224
-    train_transform = transforms.Compose([
-                            transforms.ToImage(),                                       # PIL -> tensor (uint8)
-                            transforms.Resize((224,224), interpolation=transforms.InterpolationMode.BILINEAR, antialias=True),
-                            transforms.RandomHorizontalFlip(),
-                            transforms.RandomAffine(degrees=0, translate=(0.1,0.1), interpolation=transforms.InterpolationMode.BILINEAR),
-                            transforms.ToDtype(torch.float32, scale=True),              # now [0,1]
-                            transforms.Normalize(mean, std),
-                                        ])
-
-    # Test transforms with resize to 224x224
-    test_transform = transforms.Compose([
-        transforms.ToImage(), # PIL -> Tensor fast path
-        transforms.Resize((224, 224), interpolation = transforms.InterpolationMode.BILINEAR),  # Resize to ViT's expected input size
-        transforms.ToDtype(torch.float32, scale=True),
-        transforms.Normalize(mean, std),
-    ])
-
-    # Load datasets
-    train_dataset = datasets.CIFAR100(root=data_dir, train=True, download=True, transform=train_transform)
-    test_dataset = datasets.CIFAR100(root=data_dir, train=False, download=True, transform=test_transform)
-
-    return train_dataset, test_dataset
 
 def get_oxfordseg_loaders(data_dir = './data'):
 
@@ -492,15 +443,6 @@ def log_model_to_wandb(run_logger, ckpt_path):
     
     return 
 
-def get_val_splits(train_dataset, tr_size, val_size, tr_bs, val_bs):
-
-    tr_dt, val_dt = random_split(train_dataset, [tr_size, val_size])
-
-    train_loader = DataLoader(tr_dt, batch_size = tr_bs)
-    val_loader = DataLoader(val_dt, batch_size = val_bs)
-
-    return(train_loader, val_loader)
-
 def init_wandb(team_name: str, project_name: str, run_name:str, secret_key:str, additional_config: dict = None):
 
     """" Function that initializes a WanDB session with the provided parameters."""
@@ -550,20 +492,124 @@ def get_project_details(yaml_config_file, exp_name):
     else:
         raise Exception("Provided experiment doesn't exist")
 
-def _get_world_size() -> int:
-    return int(os.environ.get("WORLD_SIZE", "1"))
+def cxcywh_to_xyxy(box_cxcywh: torch.Tensor) -> torch.Tensor:
+    # box_cxcywh: (..., 4) in [cx,cy,w,h]
+    cx, cy, w, h = box_cxcywh.unbind(-1)
+    x1 = cx - 0.5 * w
+    y1 = cy - 0.5 * h
+    x2 = cx + 0.5 * w
+    y2 = cy + 0.5 * h
+    return torch.stack([x1, y1, x2, y2], dim=-1)
 
-def _ddp_init_if_needed_v2(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    
-    acc = torch.accelerator.current_accelerator()
-    backend = torch.distributed.get_default_backend_for_device(acc)
-    # initialize process group.
-    dist.init_process_group(backend, rank = rank, world_size = world_size)
+def nms_xyxy(boxes: torch.Tensor, scores: torch.Tensor, iou_thresh: float = 0.4) -> torch.Tensor:
+    # boxes: (N,4), scores: (N,)
+    # returns indices kept
+    if boxes.numel() == 0:
+        return torch.empty((0,), dtype=torch.long, device=boxes.device)
 
-def _ddp_broadcast_stop(should_stop: bool, device: torch.device) -> bool:
-    stop_tensor = torch.tensor([1 if should_stop else 0], device=device, dtype=torch.int32)
-    dist.broadcast(stop_tensor, src=0)
-    return bool(stop_tensor.item())
+    idxs = torch.argsort(scores, descending=True)
+    keep = []
+
+    while idxs.numel() > 0:
+        i = idxs[0]
+        keep.append(i)
+
+        if idxs.numel() == 1:
+            break
+
+        rest = idxs[1:]
+        iou = box_iou_xyxy(boxes[i].unsqueeze(0), boxes[rest]).squeeze(0)
+        idxs = rest[iou <= iou_thresh]
+
+    return torch.stack(keep, dim=0)
+
+def box_iou_xyxy(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+    # boxes1: (N,4), boxes2: (M,4)
+    # returns IoU (N,M)
+    N = boxes1.shape[0]
+    M = boxes2.shape[0]
+    if N == 0 or M == 0:
+        return torch.zeros((N, M), device=boxes1.device)
+
+    x11, y11, x12, y12 = boxes1[:, 0], boxes1[:, 1], boxes1[:, 2], boxes1[:, 3]
+    x21, y21, x22, y22 = boxes2[:, 0], boxes2[:, 1], boxes2[:, 2], boxes2[:, 3]
+
+    # intersection
+    inter_x1 = torch.max(x11[:, None], x21[None, :])
+    inter_y1 = torch.max(y11[:, None], y21[None, :])
+    inter_x2 = torch.min(x12[:, None], x22[None, :])
+    inter_y2 = torch.min(y12[:, None], y22[None, :])
+
+    inter_w = (inter_x2 - inter_x1).clamp(min=0)
+    inter_h = (inter_y2 - inter_y1).clamp(min=0)
+    inter_area = inter_w * inter_h
+
+    area1 = (x12 - x11).clamp(min=0) * (y12 - y11).clamp(min=0)
+    area2 = (x22 - x21).clamp(min=0) * (y22 - y21).clamp(min=0)
+
+    union = area1[:, None] + area2[None, :] - inter_area
+    iou = inter_area / union.clamp(min=1e-6)
+    return iou
+
+
+def build_grid_targets(
+    targets: List[Any],
+    grid: int,
+    image_size: int,
+    device: torch.device,
+):
+    bsz = len(targets)
+    obj_tgt = torch.zeros((bsz, 1, grid, grid), dtype=torch.float32, device=device)
+    box_tgt = torch.zeros((bsz, 4, grid, grid), dtype=torch.float32, device=device)
+    box_msk = torch.zeros((bsz, 1, grid, grid), dtype=torch.float32, device=device)
+
+    for b in range(bsz):
+        boxes = extract_boxes_xyxy(targets[b]).to(device=device, dtype=torch.float32)
+        if boxes.numel() == 0:
+            continue
+
+        boxes_norm = boxes.clone()
+        boxes_norm[:, 0::2] = boxes_norm[:, 0::2] / float(image_size)
+        boxes_norm[:, 1::2] = boxes_norm[:, 1::2] / float(image_size)
+        boxes_cxcywh = xyxy_to_cxcywh(boxes_norm)
+
+        for n in range(boxes_cxcywh.shape[0]):
+            cx, cy, w, h = boxes_cxcywh[n]
+            gx = int(torch.clamp(cx * grid, 0, grid - 1).item())
+            gy = int(torch.clamp(cy * grid, 0, grid - 1).item())
+
+            if obj_tgt[b, 0, gy, gx] > 0:
+                prev_w = box_tgt[b, 2, gy, gx]
+                prev_h = box_tgt[b, 3, gy, gx]
+                if (w * h) <= (prev_w * prev_h):
+                    continue
+
+            obj_tgt[b, 0, gy, gx] = 1.0
+            box_tgt[b, :, gy, gx] = torch.tensor([cx, cy, w, h], device=device)
+            box_msk[b, 0, gy, gx] = 1.0
+
+    return obj_tgt, box_tgt, box_msk
+
+def xyxy_to_cxcywh(box_xyxy: torch.Tensor) -> torch.Tensor:
+    # box_xyxy: (..., 4) in [x1,y1,x2,y2]
+    x1, y1, x2, y2 = box_xyxy.unbind(-1)
+    cx = (x1 + x2) * 0.5
+    cy = (y1 + y2) * 0.5
+    w = (x2 - x1).clamp(min=1e-6)
+    h = (y2 - y1).clamp(min=1e-6)
+    return torch.stack([cx, cy, w, h], dim=-1)
+
+
+def extract_boxes_xyxy(target_item: Any) -> torch.Tensor:
+    if isinstance(target_item, dict):
+        if "boxes_xyxy" not in target_item:
+            raise ValueError("Face-detector targets dict must contain 'boxes_xyxy'.")
+        box_tensor = target_item["boxes_xyxy"]
+    else:
+        box_tensor = target_item
+
+    if not torch.is_tensor(box_tensor):
+        box_tensor = torch.tensor(box_tensor, dtype=torch.float32)
+    box_tensor = box_tensor.float().view(-1, 4)
+    return box_tensor
 
