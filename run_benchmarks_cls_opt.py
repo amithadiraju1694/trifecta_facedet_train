@@ -134,7 +134,7 @@ def verify_min_gpu_count(min_gpus: int = 2) -> bool:
 
 def ddp_setup():
     acc = torch.accelerator.current_accelerator()
-    rank = int(os.environ["LOCAL_RANK"])
+    rank = int(os.environ["LOCAL_RANK"] )
     device: torch.device = torch.device(f"{acc}:{rank}")
     backend = torch.distributed.get_default_backend_for_device(device)
     init_process_group(backend=backend)
@@ -374,6 +374,8 @@ def build_widerface_ddp_loaders(
     return train_loader, val_loader, test_loader
 
 def main(yaml_config_file: str, exp_name: str):
+    print("WORLD SIZE: ", os.environ.get("WORLD_SIZE"))
+    print("ALL ENVS:",os.environ)
     ddp_setup()
 
     config = _as_namespace(get_project_details(yaml_config_file, exp_name))
@@ -469,8 +471,4 @@ if __name__ == "__main__":
         print(f"Unable to locate sufficient {_min_gpu_count} gpus to run this example. Exiting.")
         sys.exit()
 
-    if len(sys.argv) < 3:
-        print("Usage: torchrun ... run_benchmarks_cls_opt.py <configs_train.yaml> <experiment_key>")
-        sys.exit(2)
-
-    main(sys.argv[1], sys.argv[2])
+    main("./configs_train.yaml", "vit_radar_fd")
