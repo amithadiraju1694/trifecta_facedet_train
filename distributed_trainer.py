@@ -76,9 +76,7 @@ class Trainer:
 
         # only include trainable params to optimizer. Need to rebuild or add a new param group if adding new layers later
         params = [p for p in model.parameters() if p.requires_grad]
-        scaled_lr = self.config.model_config.lr * self.world_size
-        #TODO: THERE IS SOME PROBLEM HERE WITH DATA TYPES OF LR FIX IT
-        # LR FROM CONFIG MAY BE STR BUT INTERNAL COMP IS FLOAT
+        scaled_lr = float(self.config.model_config.lr) * self.world_size
         self.optimizer = torch.optim.AdamW(params,
                                   lr=scaled_lr,
                                   weight_decay = self.config.model_config.weight_decay
