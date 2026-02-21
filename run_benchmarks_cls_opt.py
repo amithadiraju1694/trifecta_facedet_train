@@ -374,8 +374,6 @@ def build_widerface_ddp_loaders(
     return train_loader, val_loader, test_loader
 
 def main(yaml_config_file: str, exp_name: str):
-    print("WORLD SIZE: ", os.environ.get("WORLD_SIZE"))
-    print("ALL ENVS:",os.environ)
     ddp_setup()
 
     config = _as_namespace(get_project_details(yaml_config_file, exp_name))

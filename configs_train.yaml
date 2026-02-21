@@ -48,11 +48,11 @@ vit_radar_fd:
     use_amp: True
     save_every: 3
     eval_every: 5
-    data_loader_workers: 8
+    data_loader_workers: 4
     grad_norm_clip: 1.0
     patience: 10
     max_epochs: 10
-    batch_size: 256
+    batch_size: 16
     data_root: /teamspace/gcs_folders/facedetection
     snapshot_path: test_snapshot.pt
 

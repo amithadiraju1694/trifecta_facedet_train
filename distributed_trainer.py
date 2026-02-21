@@ -10,7 +10,6 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torchmetrics import JaccardIndex
-from torchmetrics.classification import Accuracy
 from helpers import (
     init_wandb,
     log_model_to_wandb,
@@ -18,7 +17,8 @@ from helpers import (
     build_grid_targets,
     EarlyStopping_MW,
 )
-
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 @dataclass
 class Snapshot:
@@ -74,8 +74,20 @@ class Trainer:
             torch.set_float32_matmul_precision("high")
             torch.backends.cudnn.benchmark = True
 
+        # Enable checkpointing here
+        model.gradient_checkpointing_enable()
+        self.model = model.to(self.device)
+
+        # wrap with DDP. this step will synch model across all the processes.
+        self.model = DDP(self.model,
+                         device_ids=[self.local_rank],
+                         output_device=self.local_rank,
+                         broadcast_buffers=False
+                         )
+
+
         # only include trainable params to optimizer. Need to rebuild or add a new param group if adding new layers later
-        params = [p for p in model.parameters() if p.requires_grad]
+        params = [p for p in self.model.parameters() if p.requires_grad]
         scaled_lr = float(self.config.model_config.lr) * self.world_size
         self.optimizer = torch.optim.AdamW(params,
                                   lr=scaled_lr,
@@ -98,16 +110,11 @@ class Trainer:
         
         # initialize train states
         self.epochs_run = 0
-        self.model = model.to(self.device)
         self.save_every = self.config.train_config.save_every
         self.eval_every = getattr(self.config.train_config, "eval_every", 3)
 
-        if self.task == "class":
-            self.metric_var = Accuracy(task = "multiclass",
-                                       num_classes=self.config.model_config.num_out
-                                       ).to(self.device)
         
-        elif self.task == "semseg":
+        if self.task == "semseg":
             self.metric_var = JaccardIndex(task="multiclass",
                                            num_classes=self.config.model_config.num_out
                                            ).to(self.device)
@@ -137,13 +144,6 @@ class Trainer:
                                          additional_config=getattr(self.config.wandb_config, "__dict__", None))
         
         self._load_snapshot()
-        
-        # wrap with DDP. this step will synch model across all the processes.
-        self.model = DDP(self.model,
-                         device_ids=[self.local_rank],
-                         output_device=self.local_rank,
-                         broadcast_buffers=False
-                         )
 
     def _load_snapshot(self):
         try:
