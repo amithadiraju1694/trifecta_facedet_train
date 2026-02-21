@@ -16,6 +16,25 @@ from helpers import (
 )
 
 
+def _hf_set_gradient_checkpointing(backbone: nn.Module, enabled: bool = True, **kwargs) -> None:
+    method_name = "gradient_checkpointing_enable" if enabled else "gradient_checkpointing_disable"
+    candidates = [backbone]
+    base_model = getattr(backbone, "base_model", None)
+    if base_model is not None and base_model is not backbone:
+        candidates.append(base_model)
+
+    for candidate in candidates:
+        method = getattr(candidate, method_name, None)
+        if callable(method):
+            if enabled:
+                method(**kwargs)
+            else:
+                method()
+            return
+
+    raise AttributeError(f"{type(backbone).__name__} does not support {method_name}()")
+
+
 
 # ----- Baseline Semantic Segmentation ------ #
 class ViTLoRA_SemSeg(nn.Module):
@@ -95,6 +114,16 @@ class ViTLoRA_SemSeg(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Conv2d(self.hidden, num_out_classes, kernel_size=1),
             )
+
+    def gradient_checkpoint_enabled(self, enabled: bool = True, **kwargs):
+        _hf_set_gradient_checkpointing(self.vit, enabled=enabled, **kwargs)
+        return self
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        return self.gradient_checkpoint_enabled(True, **kwargs)
+
+    def gradient_checkpointing_disable(self):
+        return self.gradient_checkpoint_enabled(False)
 
     
     def forward(self, pixel_values, train_mode:bool = True):
@@ -189,6 +218,16 @@ class ViTWithSegFormer(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Conv2d(self.hidden, num_out_classes, kernel_size=1),
             )
+
+    def gradient_checkpoint_enabled(self, enabled: bool = True, **kwargs):
+        _hf_set_gradient_checkpointing(self.segformer, enabled=enabled, **kwargs)
+        return self
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        return self.gradient_checkpoint_enabled(True, **kwargs)
+
+    def gradient_checkpointing_disable(self):
+        return self.gradient_checkpoint_enabled(False)
 
     def __get_segformer_feats(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """
@@ -315,6 +354,16 @@ class ViTRADAR_SoftAnchor_v1_SemSeg(nn.Module):
                 nn.Conv2d(self.hidden, num_out_classes, kernel_size=1),
             )
 
+    def gradient_checkpoint_enabled(self, enabled: bool = True, **kwargs):
+        _hf_set_gradient_checkpointing(self.vit, enabled=enabled, **kwargs)
+        return self
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        return self.gradient_checkpoint_enabled(True, **kwargs)
+
+    def gradient_checkpointing_disable(self):
+        return self.gradient_checkpoint_enabled(False)
+
     def __get_vit_peout(self, pixel_values: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         """
@@ -418,6 +467,16 @@ class ViTFaceDetectorPlain(nn.Module):
                                   stride=1,
                                   padding=0
                                   )
+
+    def gradient_checkpoint_enabled(self, enabled: bool = True, **kwargs):
+        _hf_set_gradient_checkpointing(self.vit, enabled=enabled, **kwargs)
+        return self
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        return self.gradient_checkpoint_enabled(True, **kwargs)
+
+    def gradient_checkpointing_disable(self):
+        return self.gradient_checkpoint_enabled(False)
 
     def forward(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
         out = self.vit(pixel_values, return_dict=True)
@@ -526,6 +585,16 @@ class ViTFaceDetectorRADAR(nn.Module):
         # box head predicts normalized cx,cy,w,h in [0,1] (we'll sigmoid)
         self.box_head = nn.Conv2d(in_channels = hidden, out_channels=4, kernel_size=1, stride=1, padding=0)
 
+    def gradient_checkpoint_enabled(self, enabled: bool = True, **kwargs):
+        _hf_set_gradient_checkpointing(self.vit, enabled=enabled, **kwargs)
+        return self
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        return self.gradient_checkpoint_enabled(True, **kwargs)
+
+    def gradient_checkpointing_disable(self):
+        return self.gradient_checkpoint_enabled(False)
+
     def __get_vit_peout(self, pixel_values: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         """
@@ -629,6 +698,5 @@ class ViTFaceDetectorRADAR(nn.Module):
             keep = nms_xyxy(boxes_xyxy, scores, iou_thresh=iou_thresh)
             results.append({"boxes_xyxy": boxes_xyxy[keep], "scores": scores[keep]})
         return results
-
 
 
