@@ -384,6 +384,13 @@ class Trainer:
                 break
     
     def test(self):
+        # Sync ranks so nobody reads the checkpoint while rank0 is still writing it.
+        if dist.is_available() and dist.is_initialized():
+            if dist.get_backend() == "nccl":
+                dist.barrier(device_ids=[self.local_rank])
+            else:
+                dist.barrier()
+
         # Load latest model snapshot for inference
         self._load_snapshot()
 
