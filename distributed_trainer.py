@@ -74,6 +74,12 @@ class Trainer:
             torch.set_float32_matmul_precision("high")
             torch.backends.cudnn.benchmark = True
 
+
+        # set device
+        self.acc = torch.accelerator.current_accelerator()
+        self.device: torch.device = torch.device(f"{self.acc}:{self.local_rank}")
+        self.device_type = self.device.type
+        
         # Enable checkpointing here
         model.gradient_checkpointing_enable()
         self.model = model.to(self.device)
@@ -98,11 +104,6 @@ class Trainer:
                                                                      T_mult=1,
                                                                      eta_min=1e-6)
 
-        
-        # set device
-        self.acc = torch.accelerator.current_accelerator()
-        self.device: torch.device = torch.device(f"{self.acc}:{self.local_rank}")
-        self.device_type = self.device.type
 
         self.train_loader = train_dataloader
         self.val_loader = val_dataloader if val_dataloader else None
