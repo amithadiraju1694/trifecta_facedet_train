@@ -46,7 +46,7 @@ class Trainer:
         self.seed = self.base_seed + self.global_rank
         set_system_seed(self.seed)
 
-        self.deterministic = bool(getattr(self.config.train_config, "deterministic", True))
+        self.deterministic = bool(getattr(self.config.train_config, "deterministic", False))
         self.task = str(getattr(self.config.train_config, "task", "class")).lower()
         self.box_loss_weight = float(getattr(self.config.train_config, "box_loss_weight", 5.0))
 
@@ -173,7 +173,7 @@ class Trainer:
         self.model.train() if train else self.model.eval()
         metric_value = None
 
-        with torch.set_grad_enabled(train), torch.amp.autocast(device_type=self.device_type,dtype=torch.bfloat16,enabled=(self.config.train_config.use_amp)):
+        with torch.set_grad_enabled(train), torch.amp.autocast(device_type=self.device_type,dtype=torch.float16,enabled=(self.config.train_config.use_amp)):
             if self.task == "facedet":
                 
                 pred = self.model(source)
@@ -311,7 +311,7 @@ class Trainer:
 
     def train(self):
         
-        for epoch in range(self.epochs_run, self.config.train_config.max_epochs):
+        for epoch in range(self.epochs_run, self.config.train_config.num_epochs):
             epoch += 1
             # run one epoch on entire data set
             train_loss = self._run_epoch(epoch, self.train_loader, train=True)

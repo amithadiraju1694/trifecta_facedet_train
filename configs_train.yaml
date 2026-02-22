@@ -43,6 +43,7 @@ vit_radar_fd:
   train_config:
     system_seed: 108
     num_epochs: 2
+    deterministic: False
     task: facedet
     model_name: radar_softanchor_v1
     use_amp: True
@@ -51,8 +52,7 @@ vit_radar_fd:
     data_loader_workers: 4
     grad_norm_clip: 1.0
     patience: 10
-    max_epochs: 10
-    batch_size: 16
+    batch_size: 64
     data_root: /teamspace/gcs_folders/facedetection
     snapshot_path: test_snapshot.pt
 
@@ -89,7 +89,6 @@ vit_pfim:
     data_loader_workers: 8
     grad_norm_clip: 1.0
     patience: 10
-    max_epochs: 10
     batch_size: 216
     dataset_hf_url: hf://datasets/timm/imagenet-1k-wds
     snapshot_path: test_snapshot.pt
