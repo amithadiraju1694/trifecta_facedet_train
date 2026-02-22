@@ -449,6 +449,11 @@ class ViTFaceDetectorPlain(nn.Module):
 
         # Google ViT-Small backbone (HF checkpoint name)
         self.vit = ViTModel.from_pretrained("google/vit-base-patch16-224")
+        # Ensuring ViT layers are frozen
+        for param in self.vit.parameters():
+            param.requires_grad = False
+        
+        self.vit.eval()
         hidden = self.vit.config.hidden_size  # e.g. 384
 
         # Dense heads on token grid
@@ -564,6 +569,11 @@ class ViTFaceDetectorRADAR(nn.Module):
 
         # Google ViT-Small backbone (HF checkpoint name)
         self.vit = ViTModel.from_pretrained("google/vit-base-patch16-224")
+        # Ensuring ViT layers are frozen
+        for param in self.vit.parameters():
+            param.requires_grad = False
+        
+        self.vit.eval()
         hidden = self.vit.config.hidden_size  # e.g. 384
 
         self.radar_layer = RADAR(
