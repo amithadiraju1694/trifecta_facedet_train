@@ -393,6 +393,7 @@ class Trainer:
 
         # Load latest model snapshot for inference
         self._load_snapshot()
+        print("Loaded model for inference ...")
 
         if not self.test_loader:
             raise ValueError("Test Data loader not provided during intialization")
@@ -402,6 +403,8 @@ class Trainer:
                                 train = False,
                                 compute_metrics = True
                                         )
+        
+        print(f"Test set loss: {test_loss}, Test Metric: {test_metric}")
         
         if self.global_rank == 0 and self.run_logger is not None:
             self.run_logger.log({"test_loss": test_loss, "test_metric": test_metric})
