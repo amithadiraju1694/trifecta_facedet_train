@@ -448,9 +448,15 @@ def init_wandb(team_name: str, project_name: str, run_name:str, secret_key:str, 
     """" Function that initializes a WanDB session with the provided parameters."""
 
     try:
-        wandb.login(key = secret_key, force = True)
-    except:
-        raise Exception("Error logging into Wandb with provided token")
+        wandb.login(key=secret_key, force=True)
+    except Exception as e:
+        wandb_ver = getattr(wandb, "__version__", "unknown")
+        raise Exception(
+            f"Error logging into Wandb (wandb=={wandb_ver}, key length={len(key)}). "
+            f"If W&B is giving you an 86-char API key, you likely need a newer wandb client "
+            f"(this repo previously pinned wandb==0.18.7 which enforces 40-char keys). "
+            f"Original error: {e}"
+        )
 
     # Start a new wandb run to track this script.
     run = wandb.init(
@@ -612,4 +618,3 @@ def extract_boxes_xyxy(target_item: Any) -> torch.Tensor:
         box_tensor = torch.tensor(box_tensor, dtype=torch.float32)
     box_tensor = box_tensor.float().view(-1, 4)
     return box_tensor
-

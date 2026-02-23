@@ -2,7 +2,7 @@ transformers==4.53.2
 torch==2.6.0
 torchvision==0.21.0
 datasets==3.2.0
-wandb==0.18.7
+wandb>=0.18.7
 numpy
 fvcore==0.1.5.post20221221
 peft==0.18.0
