@@ -102,24 +102,16 @@ def get_model_facedet(exp_name, config):
     model_config = getattr(config, "model_config", config)
 
     if exp_key == "vit_radar_fd" or ("radar" in exp_key and exp_key.endswith("_fd")):
-        if ViTFaceDetectorRADAR is None:
-            raise ImportError("ViTFaceDetectorRADAR not found in Custom_VIT_SemSeg.py.")
         return _build_model_from_signature(ViTFaceDetectorRADAR, model_config)
 
     if exp_key == "vit_plain_fd" or ("plain" in exp_key and exp_key.endswith("_fd")):
-        if ViTFaceDetectorPlain is None:
-            raise ImportError("ViTFaceDetectorPlain not found in Custom_VIT_SemSeg.py.")
         return _build_model_from_signature(ViTFaceDetectorPlain, model_config)
 
     # Backward-compatible fallback if header naming is not yet updated.
     train_name = str(getattr(getattr(config, "train_config", None), "model_name", "")).lower()
     if train_name in {"facedet_radar", "vitfacedet_radar", "vit_face_detector_radar", "radar_softanchor_v1"}:
-        if ViTFaceDetectorRADAR is None:
-            raise ImportError("ViTFaceDetectorRADAR not found in Custom_VIT_SemSeg.py.")
         return _build_model_from_signature(ViTFaceDetectorRADAR, model_config)
     if train_name in {"facedet_plain", "vitfacedet_plain", "vit_face_detector_plain"}:
-        if ViTFaceDetectorPlain is None:
-            raise ImportError("ViTFaceDetectorPlain not found in Custom_VIT_SemSeg.py.")
         return _build_model_from_signature(ViTFaceDetectorPlain, model_config)
 
     raise ValueError(
