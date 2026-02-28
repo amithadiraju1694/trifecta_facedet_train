@@ -440,6 +440,7 @@ class EarlyStopping_MW:
 
         self.best = float("inf") if mode == "min" else -float("inf")
         self.num_bad_epochs = 0
+        self.saved_last = False
 
     def _is_improvement(self, metric_value: float) -> bool:
         if self.mode == "min":
@@ -453,6 +454,7 @@ class EarlyStopping_MW:
              model,
              optimizer=None,
              extra: Optional[Dict[str, Any]] = None) -> bool:
+        self.saved_last = False
         metric_value = float(metric_value)
         if self._is_improvement(metric_value):
             self.best = metric_value
@@ -469,6 +471,7 @@ class EarlyStopping_MW:
                 payload.update(extra)
 
             torch.save(payload, self.ckpt_path)
+            self.saved_last = True
             return False
 
         self.num_bad_epochs += 1

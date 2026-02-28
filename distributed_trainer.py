@@ -362,8 +362,7 @@ class Trainer:
             torch.save(snapshot, f)
             
         print(f"Snapshot saved at epoch {epoch}")
-        if self.save_onnx:
-            self._export_onnx(epoch)
+        # ONNX export is triggered only when EarlyStopping saves a new best checkpoint.
 
     def train(self):
         
@@ -372,10 +371,6 @@ class Trainer:
             # run one epoch on entire data set
             train_loss = self._run_epoch(epoch, self.train_loader, train=True)
             self.lr_scheduler.step(epoch)
-
-            # save recent model snapshot
-            if self.global_rank == 0 and epoch % self.save_every == 0:
-                self._save_snapshot(epoch)
             
             should_stop = False
             
@@ -397,6 +392,8 @@ class Trainer:
                         optimizer=self.optimizer,
                         extra={"split": "val", "train_loss": float(train_loss), "val_metric": float(val_metric)},
                     )
+                    if self.save_onnx and getattr(self.early_stopper, "saved_last", False):
+                        self._export_onnx(epoch)
 
                 # Communicate to other machine if it needs to be stopped
                 if dist.is_available() and dist.is_initialized():
@@ -426,6 +423,8 @@ class Trainer:
                             optimizer=self.optimizer,
                             extra={"split": "train"},
                         )
+                        if self.save_onnx and getattr(self.early_stopper, "saved_last", False):
+                            self._export_onnx(epoch)
                     
                     # communicate to all machines based on stop_iteration accordingly
                     if dist.is_available() and dist.is_initialized():
