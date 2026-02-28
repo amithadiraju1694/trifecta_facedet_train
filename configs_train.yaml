@@ -42,12 +42,12 @@ vit_radar_fd:
 
   train_config:
     system_seed: 108
-    num_epochs: 100
+    num_epochs: 5
     deterministic: False
     task: facedet
     model_name: radar_softanchor_v1
     use_amp: True
-    save_every: 20
+    save_every: 3
     eval_every: 10
     data_loader_workers: 6
     grad_norm_clip: 1.0
