@@ -705,7 +705,7 @@ def log_model_to_wandb(run_logger, ckpt_path):
 
     try:
         # Create a W&B artifact
-        artifact = wandb.Artifact(name="best_valloss_model_checkpoint", type="model")
+        artifact = wandb.Artifact(name="best_model_checkpoint", type="model")
 
         # Add the .pth file to the artifact
         artifact.add_file(ckpt_path)

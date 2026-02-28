@@ -432,9 +432,8 @@ def main(yaml_config_file: str, exp_name: str):
     shuffle_buf = int(getattr(config.train_config, "shuffle_buf", 10_000))
 
     if task == "facedet":
-        data_root = getattr(config.train_config, 
-                            "dataset_root", None) or getattr(config.train_config,
-                                                              "data_root", None)
+        data_root = getattr(config.train_config, "dataset_root", None
+                            ) or getattr(config.train_config,"data_root", None)
         if not data_root:
             raise ValueError("Missing dataset_root/data_root for facedet task.")
         

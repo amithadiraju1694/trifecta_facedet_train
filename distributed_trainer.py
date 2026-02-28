@@ -3,6 +3,7 @@ from collections import OrderedDict
 from typing import Any, Dict
 import os
 import fsspec
+import io
 
 import torch
 import torch.nn as nn
@@ -113,6 +114,8 @@ class Trainer:
         self.epochs_run = 0
         self.save_every = self.config.train_config.save_every
         self.eval_every = getattr(self.config.train_config, "eval_every", 3)
+        self.save_onnx = bool(getattr(self.config.train_config, "save_onnx", False))
+        self.onnx_path = getattr(self.config.train_config, "onnx_path", None)
 
         
         if self.task == "semseg":
@@ -145,6 +148,57 @@ class Trainer:
                                          additional_config=getattr(self.config.wandb_config, "__dict__", None))
         
         self._load_snapshot()
+
+    def _export_onnx(self, epoch: int) -> None:
+        if not self.save_onnx:
+            return
+        if not self.onnx_path:
+            raise ValueError("save_onnx=True requires train_config.onnx_path")
+
+        raw_model = self.model.module if hasattr(self.model, "module") else self.model
+        raw_model.eval()
+
+        image_size = int(getattr(self.config.train_config, "image_size", getattr(raw_model, "image_size", 224)))
+        dummy = torch.zeros((1, 3, image_size, image_size), device=self.device, dtype=torch.float32)
+
+        input_names = ["pixel_values"]
+        dynamic_axes = {"pixel_values": {0: "batch"}}
+        opset_version = int(getattr(self.config.train_config, "onnx_opset", 17))
+
+        if self.task == "facedet":
+            class _FDExportWrapper(nn.Module):
+                def __init__(self, m: nn.Module):
+                    super().__init__()
+                    self.m = m
+
+                def forward(self, pixel_values: torch.Tensor):
+                    out = self.m(pixel_values)
+                    return out["obj_logits"], out["box_norm"]
+
+            export_model = _FDExportWrapper(raw_model)
+            output_names = ["obj_logits", "box_norm"]
+            dynamic_axes["obj_logits"] = {0: "batch"}
+            dynamic_axes["box_norm"] = {0: "batch"}
+        else:
+            export_model = raw_model
+            output_names = ["logits"]
+            dynamic_axes["logits"] = {0: "batch"}
+
+        buf = io.BytesIO()
+        with torch.no_grad():
+            torch.onnx.export(
+                export_model,
+                (dummy,),
+                buf,
+                input_names=input_names,
+                output_names=output_names,
+                dynamic_axes=dynamic_axes,
+                opset_version=opset_version,
+                do_constant_folding=True,
+            )
+        with fsspec.open(self.onnx_path, "wb") as f:
+            f.write(buf.getvalue())
+        print(f"ONNX saved at epoch {epoch} -> {self.onnx_path}")
 
     def _load_snapshot(self):
         try:
@@ -308,6 +362,8 @@ class Trainer:
             torch.save(snapshot, f)
             
         print(f"Snapshot saved at epoch {epoch}")
+        if self.save_onnx:
+            self._export_onnx(epoch)
 
     def train(self):
         
@@ -408,7 +464,7 @@ class Trainer:
         
         if self.global_rank == 0 and self.run_logger is not None:
             self.run_logger.log({"test_loss": test_loss, "test_metric": test_metric})
-            log_model_to_wandb(self.run_logger, self.config.train_config.snapshot_path)
+            log_model_to_wandb(self.run_logger, self.config.train_config.onnx_path)
             self.run_logger.finish()
         
         
