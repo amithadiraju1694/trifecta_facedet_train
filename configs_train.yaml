@@ -54,6 +54,12 @@ vit_radar_fd:
     patience: 7
     batch_size: 64
     data_root: /teamspace/gcs_folders/facedetection
+    use_crowdhuman: True
+    crowdhuman_root: /teamspace/gcs_folders/facedetection/crowdhuman
+    crowdhuman_max_rows: 15000
+    gaussian_noise_prob: 0.2
+    gaussian_noise_std: 0.03
+    mosaic_prob: 0.25
     snapshot_path: test_snapshot.pt
 
   wandb_config:

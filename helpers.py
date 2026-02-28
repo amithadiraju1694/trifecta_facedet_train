@@ -1,5 +1,8 @@
 import torch
+import torch.nn.functional as F
 import random
+import json
+import zipfile
 import yaml
 import numpy as np
 import wandb
@@ -15,6 +18,8 @@ from typing import Optional, Tuple
 import os
 from helpers_profiling import *
 from typing import Tuple, Optional, Dict, Any, List
+from PIL import Image
+from huggingface_hub import hf_hub_download
 
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406); IMAGENET_STD  = (0.229, 0.224, 0.225)
@@ -137,6 +142,247 @@ class WiderFaceTrain(Dataset):
         boxes = boxes[valid]
         return img_t, boxes
 
+class CrowdHuman(torch.utils.data.Dataset):
+    def __init__(self, root: str, split: str = "train", image_size: int = 224, download: bool = True, max_rows: int = None):
+        self.root = root
+        self.split = split
+        self.image_size = int(image_size)
+        self.max_rows = max_rows
+        self.data = []
+        self.img_dir = os.path.join(self.root, "Images")
+
+        if download:
+            self._download_and_extract()
+
+        self._load_annotations()
+
+        self.transform = transforms.Compose([
+            transforms.ToImage(),
+            transforms.Resize((self.image_size, self.image_size), antialias=True),
+            transforms.ToDtype(torch.float32, scale=True),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+        ])
+
+    def _download_and_extract(self):
+        repo_id = "sshao0516/CrowdHuman"
+        os.makedirs(self.root, exist_ok=True)
+
+        if self.split == "train":
+            zips_to_dl = ["train01.zip"]  # Only downloading the first subset to save time/space
+            ann_file = "annotation_train.odgt"
+        elif self.split == "val":
+            zips_to_dl = ["val.zip"]
+            ann_file = "annotation_val.odgt"
+        else:
+            raise ValueError("Split must be 'train' or 'val'.")
+
+        ann_path = os.path.join(self.root, ann_file)
+        if not os.path.exists(ann_path):
+            hf_hub_download(repo_id=repo_id, filename=ann_file, repo_type="dataset", local_dir=self.root)
+
+        self.img_dir = os.path.join(self.root, "Images")
+        os.makedirs(self.img_dir, exist_ok=True)
+
+        for z_file in zips_to_dl:
+            z_path = os.path.join(self.root, z_file)
+            if not os.path.exists(z_path):
+                hf_hub_download(repo_id=repo_id, filename=z_file, repo_type="dataset", local_dir=self.root)
+
+            with zipfile.ZipFile(z_path, 'r') as zip_ref:
+                for member in zip_ref.namelist():
+                    if member.endswith('.jpg'):
+                        filename = os.path.basename(member)
+                        dest = os.path.join(self.img_dir, filename)
+                        if not os.path.exists(dest):
+                            with zip_ref.open(member) as source, open(dest, "wb") as target:
+                                target.write(source.read())
+
+    def _load_annotations(self):
+        ann_file = "annotation_train.odgt" if self.split == "train" else "annotation_val.odgt"
+        ann_path = os.path.join(self.root, ann_file)
+        
+        if not os.path.exists(ann_path):
+            raise FileNotFoundError(f"Annotation missing: {ann_path}. Ensure download=True.")
+
+        with open(ann_path, 'r') as f:
+            for line in f:
+                # Stop parsing if we hit the requested max_rows
+                if self.max_rows is not None and len(self.data) >= self.max_rows:
+                    break
+                    
+                entry = json.loads(line)
+                img_path = os.path.join(self.img_dir, f"{entry['ID']}.jpg")
+
+                if os.path.exists(img_path):
+                    bboxes = []
+                    if 'gtboxes' in entry:
+                        for box in entry['gtboxes']:
+                            # STRICTLY HEAD BOUNDING BOXES ONLY
+                            if 'hbox' in box:  
+                                bboxes.append(box['hbox'])
+
+                    # Keep only images with at least one head box.
+                    if len(bboxes) > 0:
+                        self.data.append({
+                            "img_path": img_path,
+                            "bboxes": bboxes
+                        })
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx: int):
+        item = self.data[idx]
+        img_path = item["img_path"]
+
+        img = Image.open(img_path).convert("RGB")
+        orig_w, orig_h = img.size
+
+        img_t = self.transform(img)
+
+        boxes_xywh = item["bboxes"]
+
+        if not boxes_xywh:
+            boxes = torch.empty((0, 4), dtype=torch.float32)
+            return img_t, boxes
+
+        boxes_xywh = torch.tensor(boxes_xywh, dtype=torch.float32)
+
+        if boxes_xywh.numel() == 0:
+            boxes = torch.empty((0, 4), dtype=torch.float32)
+            return img_t, boxes
+
+        boxes_xywh = boxes_xywh.view(-1, 4)
+        sx = self.image_size / float(orig_w)
+        sy = self.image_size / float(orig_h)
+
+        x = boxes_xywh[:, 0]
+        y = boxes_xywh[:, 1]
+        w = boxes_xywh[:, 2]
+        h = boxes_xywh[:, 3]
+
+        # Convert xywh to xyxy based on scaled image size
+        x1 = x * sx
+        y1 = y * sy
+        x2 = (x + w) * sx
+        y2 = (y + h) * sy
+        boxes = torch.stack([x1, y1, x2, y2], dim=1)
+
+        # Clamp boxes to image boundaries
+        boxes[:, 0::2] = boxes[:, 0::2].clamp(0, self.image_size - 1)
+        boxes[:, 1::2] = boxes[:, 1::2].clamp(0, self.image_size - 1)
+
+        # Filter out invalid boxes
+        valid = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+        boxes = boxes[valid]
+        
+        return img_t, boxes
+
+
+class FaceDetTrainAugmentDataset(Dataset):
+    """Train-time wrapper with optional Gaussian noise and 4-image mosaic."""
+
+    def __init__(
+        self,
+        base_ds: Dataset,
+        mosaic_prob: float = 0.0,
+        gaussian_noise_prob: float = 0.0,
+        gaussian_noise_std: float = 0.02,
+    ):
+        self.base_ds = base_ds
+        self.mosaic_prob = float(mosaic_prob)
+        self.gaussian_noise_prob = float(gaussian_noise_prob)
+        self.gaussian_noise_std = float(gaussian_noise_std)
+
+    def __len__(self):
+        return len(self.base_ds)
+
+    @staticmethod
+    def _resize_with_boxes(
+        img: torch.Tensor,
+        boxes: torch.Tensor,
+        out_h: int,
+        out_w: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        src_h, src_w = int(img.shape[-2]), int(img.shape[-1])
+        img = F.interpolate(img.unsqueeze(0), size=(out_h, out_w), mode="bilinear", align_corners=False).squeeze(0)
+
+        if boxes.numel() == 0:
+            return img, boxes
+
+        boxes = boxes.clone()
+        boxes[:, 0::2] = boxes[:, 0::2] * (float(out_w) / float(max(src_w, 1)))
+        boxes[:, 1::2] = boxes[:, 1::2] * (float(out_h) / float(max(src_h, 1)))
+        boxes[:, 0::2] = boxes[:, 0::2].clamp(0, max(0, out_w - 1))
+        boxes[:, 1::2] = boxes[:, 1::2].clamp(0, max(0, out_h - 1))
+        valid = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+        boxes = boxes[valid]
+        return img, boxes
+
+    def _build_mosaic(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Sample 4 images and tile them into one output canvas.
+        indices = [idx] + [random.randrange(len(self.base_ds)) for _ in range(3)]
+        ref_img, _ = self.base_ds[idx]
+        h, w = int(ref_img.shape[-2]), int(ref_img.shape[-1])
+        h_mid = h // 2
+        w_mid = w // 2
+
+        tile_sizes = [
+            (h_mid, w_mid),
+            (h_mid, w - w_mid),
+            (h - h_mid, w_mid),
+            (h - h_mid, w - w_mid),
+        ]
+        offsets = [
+            (0, 0),
+            (0, w_mid),
+            (h_mid, 0),
+            (h_mid, w_mid),
+        ]
+
+        canvas = torch.zeros_like(ref_img)
+        mosaic_boxes: List[torch.Tensor] = []
+
+        for tile_idx, sample_idx in enumerate(indices):
+            img_i, boxes_i = self.base_ds[sample_idx]
+            tile_h, tile_w = tile_sizes[tile_idx]
+            y_off, x_off = offsets[tile_idx]
+
+            img_i, boxes_i = self._resize_with_boxes(img_i, boxes_i, tile_h, tile_w)
+            canvas[:, y_off:y_off + tile_h, x_off:x_off + tile_w] = img_i
+
+            if boxes_i.numel() > 0:
+                boxes_i = boxes_i.clone()
+                boxes_i[:, 0::2] += float(x_off)
+                boxes_i[:, 1::2] += float(y_off)
+                mosaic_boxes.append(boxes_i)
+
+        if len(mosaic_boxes) == 0:
+            return canvas, torch.empty((0, 4), dtype=torch.float32)
+
+        out_boxes = torch.cat(mosaic_boxes, dim=0)
+        out_boxes[:, 0::2] = out_boxes[:, 0::2].clamp(0, max(0, w - 1))
+        out_boxes[:, 1::2] = out_boxes[:, 1::2].clamp(0, max(0, h - 1))
+        valid = (out_boxes[:, 2] > out_boxes[:, 0]) & (out_boxes[:, 3] > out_boxes[:, 1])
+        out_boxes = out_boxes[valid]
+        return canvas, out_boxes
+
+    def _apply_gaussian_noise(self, img: torch.Tensor) -> torch.Tensor:
+        if self.gaussian_noise_std <= 0.0:
+            return img
+        if random.random() >= self.gaussian_noise_prob:
+            return img
+        noisy = img + (torch.randn_like(img) * self.gaussian_noise_std)
+        return noisy.clamp(-6.0, 6.0)
+
+    def __getitem__(self, idx: int):
+        if self.mosaic_prob > 0.0 and random.random() < self.mosaic_prob:
+            img, boxes = self._build_mosaic(idx)
+        else:
+            img, boxes = self.base_ds[idx]
+
+        img = self._apply_gaussian_noise(img)
+        return img, boxes
 
 def collate_widerface(batch: List[Tuple[torch.Tensor, torch.Tensor]]):
     images = torch.stack([item[0] for item in batch], dim=0)

@@ -1,11 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import timm
 from transformers import (
     ViTModel,
     SegformerModel
                           )
 from typing import Tuple, Dict
+from types import SimpleNamespace
 from peft import LoraConfig, get_peft_model, TaskType
 
 from radar_layers import RADAR
@@ -32,6 +34,144 @@ def _hf_set_gradient_checkpointing(backbone: nn.Module, enabled: bool = True, **
             return
 
     raise AttributeError(f"{type(backbone).__name__} does not support {method_name}()")
+
+
+class _TimmEmbeddingsShim:
+    """HF-like embeddings shim for timm ViT backbones."""
+
+    def __init__(self, backbone: nn.Module):
+        self._backbone = backbone
+        self.dropout = backbone.pos_drop
+        self._last_position_embeddings = backbone.pos_embed
+
+    @property
+    def cls_token(self) -> torch.Tensor:
+        return self._backbone.cls_token
+
+    @property
+    def position_embeddings(self) -> torch.Tensor:
+        return self._last_position_embeddings
+
+    def _interpolate_position_embeddings(
+        self,
+        grid_h: int,
+        grid_w: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        pos_embed = self._backbone.pos_embed  # (1, 1+N, D)
+        cls_pos = pos_embed[:, :1, :]
+        patch_pos = pos_embed[:, 1:, :]
+
+        src_tokens = patch_pos.shape[1]
+        src_grid = int(src_tokens ** 0.5)
+        if src_grid * src_grid != src_tokens:
+            raise ValueError(f"Unexpected non-square positional grid with {src_tokens} tokens")
+
+        if grid_h == src_grid and grid_w == src_grid:
+            patch_pos_interp = patch_pos
+        else:
+            patch_pos_2d = patch_pos.reshape(1, src_grid, src_grid, -1).permute(0, 3, 1, 2)
+            patch_pos_2d = F.interpolate(
+                patch_pos_2d,
+                size=(grid_h, grid_w),
+                mode="bicubic",
+                align_corners=False,
+            )
+            patch_pos_interp = patch_pos_2d.permute(0, 2, 3, 1).reshape(1, grid_h * grid_w, -1)
+
+        return torch.cat([cls_pos, patch_pos_interp], dim=1).to(device=device, dtype=dtype)
+
+    def patch_embeddings(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        patch_tokens = self._backbone.patch_embed(pixel_values)
+
+        if patch_tokens.ndim == 4:
+            # Handle both BCHW and BHWC layout fallbacks.
+            if patch_tokens.shape[1] == self._backbone.embed_dim:
+                patch_tokens = patch_tokens.flatten(2).transpose(1, 2).contiguous()
+            else:
+                patch_tokens = patch_tokens.reshape(patch_tokens.shape[0], -1, patch_tokens.shape[-1]).contiguous()
+
+        num_tokens = patch_tokens.shape[1]
+        grid = int(num_tokens ** 0.5)
+        if grid * grid == num_tokens:
+            patch_h = grid
+            patch_w = grid
+        else:
+            patch_size = self._backbone.patch_embed.patch_size
+            if isinstance(patch_size, tuple):
+                patch_h = pixel_values.shape[-2] // patch_size[0]
+                patch_w = pixel_values.shape[-1] // patch_size[1]
+            else:
+                patch_h = pixel_values.shape[-2] // patch_size
+                patch_w = pixel_values.shape[-1] // patch_size
+        self._last_position_embeddings = self._interpolate_position_embeddings(
+            patch_h,
+            patch_w,
+            patch_tokens.dtype,
+            patch_tokens.device,
+        )
+        return patch_tokens
+
+
+class _TimmEncoderShim:
+    """HF-like encoder shim for timm ViT blocks."""
+
+    def __init__(self, backbone: nn.Module):
+        self._backbone = backbone
+
+    def __call__(self, hidden_states: torch.Tensor, return_dict: bool = True):
+        x = hidden_states
+        for block in self._backbone.blocks:
+            x = block(x)
+        if return_dict:
+            return SimpleNamespace(last_hidden_state=x)
+        return (x,)
+
+
+class _TimmViTHFCompat(nn.Module):
+    """Expose timm ViT with HF-like accessors used in this codebase."""
+
+    def __init__(
+        self,
+        model_name: str = "timm/vit_base_patch8_224.augreg2_in21k_ft_in1k",
+        pretrained: bool = True,
+    ):
+        super().__init__()
+
+        resolved_name = model_name
+        if model_name.startswith("timm/"):
+            resolved_name = f"hf-hub:{model_name}"
+
+        try:
+            backbone = timm.create_model(resolved_name, pretrained=pretrained, num_classes=0)
+        except TypeError:
+            backbone = timm.create_model(resolved_name, pretrained=pretrained)
+
+        if hasattr(backbone, "patch_embed") and hasattr(backbone.patch_embed, "strict_img_size"):
+            backbone.patch_embed.strict_img_size = False
+        if hasattr(backbone, "patch_embed") and hasattr(backbone.patch_embed, "dynamic_img_pad"):
+            backbone.patch_embed.dynamic_img_pad = True
+
+        self.backbone = backbone
+        self.embeddings = _TimmEmbeddingsShim(self.backbone)
+        self.encoder = _TimmEncoderShim(self.backbone)
+        self.layernorm = self.backbone.norm
+        self.config = SimpleNamespace(hidden_size=int(self.backbone.embed_dim))
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        setter = getattr(self.backbone, "set_grad_checkpointing", None)
+        if not callable(setter):
+            raise AttributeError(f"{type(self.backbone).__name__} does not support set_grad_checkpointing()")
+        setter(True)
+        return self
+
+    def gradient_checkpointing_disable(self):
+        setter = getattr(self.backbone, "set_grad_checkpointing", None)
+        if not callable(setter):
+            raise AttributeError(f"{type(self.backbone).__name__} does not support set_grad_checkpointing()")
+        setter(False)
+        return self
 
 
 
@@ -551,7 +691,8 @@ class ViTFaceDetectorPlain(nn.Module):
 class ViTFaceDetectorRADAR(nn.Module):
     def __init__(self,
                  image_size: int = 224,
-                 patch: int = 16,
+                 patch: int = 8,
+                 pretrained_model_name: str = "timm/vit_base_patch8_224.augreg2_in21k_ft_in1k",
                  distance_metric='euclidean',
                  aggregate_method='norm_softmax',
                  seq_select_method = 'weighted_sum',
@@ -563,17 +704,21 @@ class ViTFaceDetectorRADAR(nn.Module):
                  ):
         super().__init__()
         self.image_size = image_size
-        self.patch = patch
-        self.grid = image_size // patch  # 14 for 224/16
 
-        # Google ViT-Small backbone (HF checkpoint name)
-        self.vit = ViTModel.from_pretrained("google/vit-base-patch16-224")
-        # Ensuring ViT layers are frozen
+        # timm ViT backbone exposed through an HF-like shim:
+        self.vit = _TimmViTHFCompat(pretrained_model_name, pretrained=True)
+
+        # Freeze ViT backbone.
         for param in self.vit.parameters():
             param.requires_grad = False
         
         self.vit.eval()
-        hidden = self.vit.config.hidden_size  # e.g. 384
+        model_patch = self.vit.backbone.patch_embed.patch_size
+        self.patch = int(model_patch[0] if isinstance(model_patch, tuple) else model_patch)
+        if patch != self.patch:
+            raise ValueError(f"Requested patch={patch}, but loaded model patch size is {self.patch}")
+        self.grid = image_size // self.patch
+        hidden = self.vit.config.hidden_size
 
         self.radar_layer = RADAR(
                                     token_hid_dim = hidden,
@@ -640,8 +785,6 @@ class ViTFaceDetectorRADAR(nn.Module):
            box_norm   = sigmoid(box_raw) so outputs in [0,1]
         """
         
-        B = pixel_values.shape[0]
-
         with torch.no_grad():
             # patch_emb_out - > (batch_size, seq_len, hidden_size)
             ViT_stat_pos_emb, patch_emb_output, cls_token = self.__get_vit_peout(pixel_values)
@@ -660,8 +803,13 @@ class ViTFaceDetectorRADAR(nn.Module):
         all_tokens = sequence_output[:, 1:, :]  #(bs, seqlen, hidden_size)
         
         # reshape to (B,D,H,W) with H=W=14
+        B = all_tokens.shape[0]
         D = all_tokens.shape[-1]
-        all_tokens = all_tokens.reshape(B, self.grid, self.grid, D)         # (B,g,g,D)
+        num_tokens = all_tokens.shape[1]
+        grid = int(num_tokens ** 0.5)
+        if grid * grid != num_tokens:
+            raise ValueError(f"Expected square token map, got {num_tokens} patch tokens")
+        all_tokens = all_tokens.reshape(B, grid, grid, D)         # (B,g,g,D)
         all_tokens = all_tokens.permute(0, 3, 1, 2).contiguous()            # (B,D,g,g)
 
         obj_logits = self.obj_head(all_tokens)                          # (B,1,g,g)
@@ -671,13 +819,31 @@ class ViTFaceDetectorRADAR(nn.Module):
         return {"obj_logits": obj_logits, "box_norm": box_norm}
 
     @torch.no_grad()
-    def infer(self, images: torch.Tensor, score_thresh: float = 0.5, iou_thresh: float = 0.4):
+    def infer(
+        self,
+        images: torch.Tensor,
+        score_thresh: float = 0.5,
+        iou_thresh: float = 0.4,
+        image_size = None,
+    ):
         
        
         pred = self.forward(images)
         
         obj = torch.sigmoid(pred["obj_logits"])   # (B,1,g,g)
         box = pred["box_norm"]                    # (B,4,g,g)
+
+        if image_size is None:
+            runtime_h = int(images.shape[-2])
+            runtime_w = int(images.shape[-1])
+        elif isinstance(image_size, int):
+            runtime_h = int(image_size)
+            runtime_w = int(image_size)
+        elif isinstance(image_size, (tuple, list)) and len(image_size) == 2:
+            runtime_h = int(image_size[0])
+            runtime_w = int(image_size[1])
+        else:
+            raise ValueError("image_size must be None, int, or (height, width)")
 
         B = images.shape[0]
         results = []
@@ -697,15 +863,13 @@ class ViTFaceDetectorRADAR(nn.Module):
             # boxes are normalized to [0,1] over image size
             # convert to pixel xyxy
             boxes_xyxy = cxcywh_to_xyxy(boxes_cxcywh)
-            boxes_xyxy[:, 0::2] = boxes_xyxy[:, 0::2] * self.image_size
-            boxes_xyxy[:, 1::2] = boxes_xyxy[:, 1::2] * self.image_size
+            boxes_xyxy[:, 0::2] = boxes_xyxy[:, 0::2] * runtime_w
+            boxes_xyxy[:, 1::2] = boxes_xyxy[:, 1::2] * runtime_h
 
             # clamp
-            boxes_xyxy[:, 0::2] = boxes_xyxy[:, 0::2].clamp(0, self.image_size - 1)
-            boxes_xyxy[:, 1::2] = boxes_xyxy[:, 1::2].clamp(0, self.image_size - 1)
+            boxes_xyxy[:, 0::2] = boxes_xyxy[:, 0::2].clamp(0, max(0, runtime_w - 1))
+            boxes_xyxy[:, 1::2] = boxes_xyxy[:, 1::2].clamp(0, max(0, runtime_h - 1))
 
             keep = nms_xyxy(boxes_xyxy, scores, iou_thresh=iou_thresh)
             results.append({"boxes_xyxy": boxes_xyxy[keep], "scores": scores[keep]})
         return results
-
-

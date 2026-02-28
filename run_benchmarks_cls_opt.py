@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 from torch.distributed import init_process_group, destroy_process_group
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import ConcatDataset, DataLoader, DistributedSampler
 import torch.distributed as dist
 from distributed_trainer import Trainer
 from types import SimpleNamespace
@@ -12,6 +12,8 @@ from helpers import (
     profile_models,
     get_project_details,
     set_system_seed,
+    CrowdHuman,
+    FaceDetTrainAugmentDataset,
     WiderFaceTrain,
     collate_widerface,
                     )
@@ -312,27 +314,60 @@ def build_streaming_wds_cls_loaders(
     test_loader = _make_loader(test_ds)
     return train_loader, val_loader, test_loader
 
-
 def build_widerface_ddp_loaders(
     data_root: str,
     batch_size: int,
     num_workers: int,
     image_size: int,
     download: bool = True,
+    use_crowdhuman: bool = True,
+    crowdhuman_root: str = None,
+    crowdhuman_max_rows: int = 15000,
+    gaussian_noise_prob: float = 0.0,
+    gaussian_noise_std: float = 0.02,
+    mosaic_prob: float = 0.0,
 ):
     dist_init = dist.is_available() and dist.is_initialized()
     rank = dist.get_rank() if dist_init else 0
+    crowd_root = crowdhuman_root or os.path.join(data_root, "crowdhuman")
 
     if dist_init and download:
         if rank == 0:
             # Download once to avoid multiple ranks writing same files.
             _ = WiderFaceTrain(root=data_root, split="train", image_size=image_size, download=True)
             _ = WiderFaceTrain(root=data_root, split="val", image_size=image_size, download=True)
+            if use_crowdhuman:
+                _ = CrowdHuman(
+                    root=crowd_root,
+                    split="train",
+                    image_size=image_size,
+                    download=True,
+                    max_rows=crowdhuman_max_rows,
+                )
         dist.barrier()
         download = False
 
-    train_ds = WiderFaceTrain(root=data_root, split="train", image_size=image_size, download=download)
+    wider_train_ds = WiderFaceTrain(root=data_root, split="train", image_size=image_size, download=download)
     val_ds = WiderFaceTrain(root=data_root, split="val", image_size=image_size, download=download)
+    train_ds = wider_train_ds
+
+    if use_crowdhuman:
+        crowd_train_ds = CrowdHuman(
+            root=crowd_root,
+            split="train",
+            image_size=image_size,
+            download=download,
+            max_rows=crowdhuman_max_rows,
+        )
+        train_ds = ConcatDataset([wider_train_ds, crowd_train_ds])
+
+    if mosaic_prob > 0.0 or gaussian_noise_prob > 0.0:
+        train_ds = FaceDetTrainAugmentDataset(
+            base_ds=train_ds,
+            mosaic_prob=mosaic_prob,
+            gaussian_noise_prob=gaussian_noise_prob,
+            gaussian_noise_std=gaussian_noise_std,
+        )
 
     train_sampler = None
     val_sampler = None
@@ -404,6 +439,12 @@ def main(yaml_config_file: str, exp_name: str):
             raise ValueError("Missing dataset_root/data_root for facedet task.")
         
         dataset_download = bool(getattr(config.train_config, "dataset_download", True))
+        use_crowdhuman = bool(getattr(config.train_config, "use_crowdhuman", True))
+        crowdhuman_root = getattr(config.train_config, "crowdhuman_root", None)
+        crowdhuman_max_rows = int(getattr(config.train_config, "crowdhuman_max_rows", 15000))
+        gaussian_noise_prob = float(getattr(config.train_config, "gaussian_noise_prob", 0.0))
+        gaussian_noise_std = float(getattr(config.train_config, "gaussian_noise_std", 0.02))
+        mosaic_prob = float(getattr(config.train_config, "mosaic_prob", 0.0))
 
         train_dataloader, val_dataloader, test_dataloader = build_widerface_ddp_loaders(
             data_root=data_root,
@@ -411,6 +452,12 @@ def main(yaml_config_file: str, exp_name: str):
             num_workers=num_workers,
             image_size=image_size,
             download=dataset_download,
+            use_crowdhuman=use_crowdhuman,
+            crowdhuman_root=crowdhuman_root,
+            crowdhuman_max_rows=crowdhuman_max_rows,
+            gaussian_noise_prob=gaussian_noise_prob,
+            gaussian_noise_std=gaussian_noise_std,
+            mosaic_prob=mosaic_prob,
         )
     
     # Given that classification is removed from this repo , entire else condition may be redundant 
