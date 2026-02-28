@@ -20,6 +20,7 @@ from helpers_profiling import *
 from typing import Tuple, Optional, Dict, Any, List
 from PIL import Image
 from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import HfHubHTTPError
 
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406); IMAGENET_STD  = (0.229, 0.224, 0.225)
@@ -168,34 +169,62 @@ class CrowdHuman(torch.utils.data.Dataset):
         os.makedirs(self.root, exist_ok=True)
 
         if self.split == "train":
-            zips_to_dl = ["train01.zip"]  # Only downloading the first subset to save time/space
-            ann_file = "annotation_train.odgt"
+            zip_candidates = ["CrowdHuman_train01.zip", "train01.zip"]
+            ann_candidates = ["annotation_train.odgt"]
         elif self.split == "val":
-            zips_to_dl = ["val.zip"]
-            ann_file = "annotation_val.odgt"
+            zip_candidates = ["CrowdHuman_val.zip", "val.zip"]
+            ann_candidates = ["annotation_val.odgt"]
         else:
             raise ValueError("Split must be 'train' or 'val'.")
 
-        ann_path = os.path.join(self.root, ann_file)
-        if not os.path.exists(ann_path):
-            hf_hub_download(repo_id=repo_id, filename=ann_file, repo_type="dataset", local_dir=self.root)
+        ann_file = None
+        for cand in ann_candidates:
+            ann_path = os.path.join(self.root, cand)
+            if os.path.exists(ann_path):
+                ann_file = cand
+                break
+            try:
+                hf_hub_download(repo_id=repo_id, filename=cand, repo_type="dataset", local_dir=self.root)
+                ann_file = cand
+                break
+            except HfHubHTTPError:
+                continue
+
+        if ann_file is None:
+            raise FileNotFoundError(
+                f"Could not download annotation file from {repo_id}. Tried: {ann_candidates}"
+            )
 
         self.img_dir = os.path.join(self.root, "Images")
         os.makedirs(self.img_dir, exist_ok=True)
 
-        for z_file in zips_to_dl:
-            z_path = os.path.join(self.root, z_file)
-            if not os.path.exists(z_path):
-                hf_hub_download(repo_id=repo_id, filename=z_file, repo_type="dataset", local_dir=self.root)
+        z_file = None
+        for cand in zip_candidates:
+            z_path = os.path.join(self.root, cand)
+            if os.path.exists(z_path):
+                z_file = cand
+                break
+            try:
+                hf_hub_download(repo_id=repo_id, filename=cand, repo_type="dataset", local_dir=self.root)
+                z_file = cand
+                break
+            except HfHubHTTPError:
+                continue
 
-            with zipfile.ZipFile(z_path, 'r') as zip_ref:
-                for member in zip_ref.namelist():
-                    if member.endswith('.jpg'):
-                        filename = os.path.basename(member)
-                        dest = os.path.join(self.img_dir, filename)
-                        if not os.path.exists(dest):
-                            with zip_ref.open(member) as source, open(dest, "wb") as target:
-                                target.write(source.read())
+        if z_file is None:
+            raise FileNotFoundError(
+                f"Could not download image zip from {repo_id}. Tried: {zip_candidates}"
+            )
+
+        z_path = os.path.join(self.root, z_file)
+        with zipfile.ZipFile(z_path, 'r') as zip_ref:
+            for member in zip_ref.namelist():
+                if member.endswith('.jpg'):
+                    filename = os.path.basename(member)
+                    dest = os.path.join(self.img_dir, filename)
+                    if not os.path.exists(dest):
+                        with zip_ref.open(member) as source, open(dest, "wb") as target:
+                            target.write(source.read())
 
     def _load_annotations(self):
         ann_file = "annotation_train.odgt" if self.split == "train" else "annotation_val.odgt"
