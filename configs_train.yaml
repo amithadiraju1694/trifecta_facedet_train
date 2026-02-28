@@ -60,7 +60,7 @@ vit_radar_fd:
     gaussian_noise_prob: 0.2
     gaussian_noise_std: 0.03
     mosaic_prob: 0.25
-    save_onnx: False
+    save_onnx: True
     onnx_path: /teamspace/gcs_folders/facedetection/test_snapshot.onnx
     onnx_opset: 17
     snapshot_path: /teamspace/gcs_folders/facedetection/test_snapshot.pt
