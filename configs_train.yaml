@@ -63,8 +63,8 @@ vit_radar_fd:
     snapshot_path: test_snapshot.pt
 
   wandb_config:
-    log_metrics: True
-    log_model: True
+    log_metrics: False
+    log_model: False
     team_name: adirajupravallika-self
     project_name: 
     run_name: test1
