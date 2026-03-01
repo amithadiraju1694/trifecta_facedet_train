@@ -802,15 +802,12 @@ class ViTFaceDetectorRADAR(nn.Module):
         # We need to re-create image of original shape, so taking single CLS token doesn't work.
         all_tokens = sequence_output[:, 1:, :]  #(bs, seqlen, hidden_size)
         
-        # reshape to (B,D,H,W) with H=W=14
+        # Reshape to (B, D, grid_h, grid_w) using runtime image size (keeps ONNX export dynamic).
         B = all_tokens.shape[0]
         D = all_tokens.shape[-1]
-        num_tokens = all_tokens.shape[1]
-        grid = int(num_tokens ** 0.5)
-        if grid * grid != num_tokens:
-            raise ValueError(f"Expected square token map, got {num_tokens} patch tokens")
-        all_tokens = all_tokens.reshape(B, grid, grid, D)         # (B,g,g,D)
-        all_tokens = all_tokens.permute(0, 3, 1, 2).contiguous()            # (B,D,g,g)
+        grid_h = pixel_values.shape[-2] // self.patch
+        grid_w = pixel_values.shape[-1] // self.patch
+        all_tokens = all_tokens.transpose(1, 2).reshape(B, D, grid_h, grid_w).contiguous()
 
         obj_logits = self.obj_head(all_tokens)                          # (B,1,g,g)
         box_raw = self.box_head(all_tokens)                             # (B,4,g,g)
