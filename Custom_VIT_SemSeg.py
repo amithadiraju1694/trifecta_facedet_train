@@ -44,6 +44,62 @@ class _TimmEmbeddingsShim:
         self.dropout = backbone.pos_drop
         self._last_position_embeddings = backbone.pos_embed
 
+    class _OnnxResizeBicubic2d(torch.autograd.Function):
+        @staticmethod
+        def forward(
+            ctx,
+            x: torch.Tensor,
+            pixel_values: torch.Tensor,
+            patch_h: int,
+            patch_w: int,
+        ) -> torch.Tensor:
+            # Eager/tracing fallback for export: compute output size from the *example* input
+            # shape without converting shape tensors to Python ints (avoids TracerWarning).
+            #
+            # Use ceil division to match timm PatchEmbed dynamic padding behavior when enabled.
+            out_h = (int(pixel_values.shape[2]) + int(patch_h) - 1) // int(patch_h)
+            out_w = (int(pixel_values.shape[3]) + int(patch_w) - 1) // int(patch_w)
+            return F.interpolate(x, size=(out_h, out_w), mode="bicubic", align_corners=False)
+
+        @staticmethod
+        def symbolic(g, x, pixel_values, patch_h, patch_w):
+
+            # Build sizes = [N, C, out_h, out_w] (all int64) for ONNX Resize.
+            shape = g.op("Shape", x)
+            idx0 = g.op("Constant", value_t=torch.tensor([0], dtype=torch.long))
+            idx1 = g.op("Constant", value_t=torch.tensor([1], dtype=torch.long))
+            n = g.op("Gather", shape, idx0, axis_i=0)
+            c = g.op("Gather", shape, idx1, axis_i=0)
+
+            pv_shape = g.op("Shape", pixel_values)
+            idx2 = g.op("Constant", value_t=torch.tensor([2], dtype=torch.long))
+            idx3 = g.op("Constant", value_t=torch.tensor([3], dtype=torch.long))
+            h = g.op("Gather", pv_shape, idx2, axis_i=0)
+            w = g.op("Gather", pv_shape, idx3, axis_i=0)
+
+            # CeilDiv(h, patch_h) = (h + patch_h - 1) // patch_h
+            ph = g.op("Constant", value_t=torch.tensor([int(patch_h)], dtype=torch.long))
+            pw = g.op("Constant", value_t=torch.tensor([int(patch_w)], dtype=torch.long))
+            phm1 = g.op("Constant", value_t=torch.tensor([int(patch_h) - 1], dtype=torch.long))
+            pwm1 = g.op("Constant", value_t=torch.tensor([int(patch_w) - 1], dtype=torch.long))
+            out_h = g.op("Div", g.op("Add", h, phm1), ph)
+            out_w = g.op("Div", g.op("Add", w, pwm1), pw)
+
+            sizes = g.op("Concat", n, c, out_h, out_w, axis_i=0)
+
+            roi = g.op("Constant", value_t=torch.tensor([], dtype=torch.float32))
+            scales = g.op("Constant", value_t=torch.tensor([], dtype=torch.float32))
+
+            return g.op(
+                "Resize",
+                x,
+                roi,
+                scales,
+                sizes,
+                mode_s="cubic",
+                coordinate_transformation_mode_s="half_pixel",
+            )
+
     @property
     def cls_token(self) -> torch.Tensor:
         return self._backbone.cls_token
@@ -52,7 +108,7 @@ class _TimmEmbeddingsShim:
     def position_embeddings(self) -> torch.Tensor:
         return self._last_position_embeddings
 
-    def _interpolate_position_embeddings(
+    def _interpolate_position_embeddings_eager(
         self,
         grid_h: int,
         grid_w: int,
@@ -68,18 +124,38 @@ class _TimmEmbeddingsShim:
         if src_grid * src_grid != src_tokens:
             raise ValueError(f"Unexpected non-square positional grid with {src_tokens} tokens")
 
-        if grid_h == src_grid and grid_w == src_grid:
-            patch_pos_interp = patch_pos
-        else:
-            patch_pos_2d = patch_pos.reshape(1, src_grid, src_grid, -1).permute(0, 3, 1, 2)
-            patch_pos_2d = F.interpolate(
-                patch_pos_2d,
-                size=(grid_h, grid_w),
-                mode="bicubic",
-                align_corners=False,
-            )
-            patch_pos_interp = patch_pos_2d.permute(0, 2, 3, 1).reshape(1, grid_h * grid_w, -1)
+        patch_pos_2d = patch_pos.reshape(1, src_grid, src_grid, -1).permute(0, 3, 1, 2)
+        patch_pos_2d = F.interpolate(
+            patch_pos_2d,
+            size=(grid_h, grid_w),
+            mode="bicubic",
+            align_corners=False,
+        )
+        patch_pos_interp = patch_pos_2d.permute(0, 2, 3, 1).reshape(1, grid_h * grid_w, -1)
 
+        return torch.cat([cls_pos, patch_pos_interp], dim=1).to(device=device, dtype=dtype)
+
+    def _interpolate_position_embeddings_onnx(
+        self,
+        pixel_values: torch.Tensor,
+        patch_h: int,
+        patch_w: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        # ONNX-export path: avoid Python conditionals/int conversions based on dynamic shapes.
+        pos_embed = self._backbone.pos_embed  # (1, 1+N, D)
+        cls_pos = pos_embed[:, :1, :]
+        patch_pos = pos_embed[:, 1:, :]
+
+        src_tokens = patch_pos.shape[1]
+        src_grid = int(src_tokens ** 0.5)
+        if src_grid * src_grid != src_tokens:
+            raise ValueError(f"Unexpected non-square positional grid with {src_tokens} tokens")
+
+        patch_pos_2d = patch_pos.reshape(1, src_grid, src_grid, -1).permute(0, 3, 1, 2)
+        patch_pos_2d = self._OnnxResizeBicubic2d.apply(patch_pos_2d, pixel_values, patch_h, patch_w)
+        patch_pos_interp = patch_pos_2d.permute(0, 2, 3, 1).reshape(1, -1, patch_pos_2d.shape[1])
         return torch.cat([cls_pos, patch_pos_interp], dim=1).to(device=device, dtype=dtype)
 
     def patch_embeddings(self, pixel_values: torch.Tensor) -> torch.Tensor:
@@ -92,25 +168,32 @@ class _TimmEmbeddingsShim:
             else:
                 patch_tokens = patch_tokens.reshape(patch_tokens.shape[0], -1, patch_tokens.shape[-1]).contiguous()
 
-        num_tokens = patch_tokens.shape[1]
-        grid = int(num_tokens ** 0.5)
-        if grid * grid == num_tokens:
-            patch_h = grid
-            patch_w = grid
+        patch_size = self._backbone.patch_embed.patch_size
+        if isinstance(patch_size, tuple):
+            patch_h_ps = int(patch_size[0])
+            patch_w_ps = int(patch_size[1])
         else:
-            patch_size = self._backbone.patch_embed.patch_size
-            if isinstance(patch_size, tuple):
-                patch_h = pixel_values.shape[-2] // patch_size[0]
-                patch_w = pixel_values.shape[-1] // patch_size[1]
-            else:
-                patch_h = pixel_values.shape[-2] // patch_size
-                patch_w = pixel_values.shape[-1] // patch_size
-        self._last_position_embeddings = self._interpolate_position_embeddings(
-            patch_h,
-            patch_w,
-            patch_tokens.dtype,
-            patch_tokens.device,
-        )
+            patch_h_ps = int(patch_size)
+            patch_w_ps = int(patch_size)
+
+        if torch.onnx.is_in_onnx_export():
+            self._last_position_embeddings = self._interpolate_position_embeddings_onnx(
+                pixel_values,
+                patch_h_ps,
+                patch_w_ps,
+                patch_tokens.dtype,
+                patch_tokens.device,
+            )
+        else:
+            # Ceil division matches timm PatchEmbed dynamic padding behavior.
+            grid_h = (int(pixel_values.shape[-2]) + patch_h_ps - 1) // patch_h_ps
+            grid_w = (int(pixel_values.shape[-1]) + patch_w_ps - 1) // patch_w_ps
+            self._last_position_embeddings = self._interpolate_position_embeddings_eager(
+                grid_h,
+                grid_w,
+                patch_tokens.dtype,
+                patch_tokens.device,
+            )
         return patch_tokens
 
 
@@ -628,16 +711,28 @@ class ViTFaceDetectorPlain(nn.Module):
 
         # remove CLS
         tokens = tokens[:, 1:, :]  # (B, N, D), N=grid*grid
-        B, _, D = tokens.shape
+        x = tokens.transpose(1, 2).contiguous()  # (B, D, N)
 
-        # reshape to grid
-        tokens = tokens.reshape(B, self.grid, self.grid, D) # (B,g,g,D)
-        tokens = tokens.permute(0, 3, 1, 2).contiguous() # (B,D,g,g)
+        if torch.onnx.is_in_onnx_export():
+            import torch.onnx.operators as onnx_ops
+
+            pv_shape = onnx_ops.shape_as_tensor(pixel_values)
+            grid_h = torch.floor_divide(pv_shape[2], self.patch)
+            grid_w = torch.floor_divide(pv_shape[3], self.patch)
+            x_shape = onnx_ops.shape_as_tensor(x)
+            out_shape = torch.stack([x_shape[0], x_shape[1], grid_h, grid_w])
+            x = onnx_ops.reshape_from_tensor_shape(x, out_shape)
+        else:
+            B = x.shape[0]
+            D = x.shape[1]
+            grid_h = pixel_values.shape[-2] // self.patch
+            grid_w = pixel_values.shape[-1] // self.patch
+            x = x.reshape(B, D, grid_h, grid_w).contiguous()
 
         # obj logits = does any of 14x14 grid contain a face in centre or not
         # box norm/logits = if there's face output cx,cy,w,h else gaussian x,y,w,h
-        obj_logits = self.obj_head(tokens)  # (B,1,g,g)
-        box_raw = self.box_head(tokens)  # (B,4,g,g)
+        obj_logits = self.obj_head(x)  # (B,1,g,g)
+        box_raw = self.box_head(x)  # (B,4,g,g)
         box_norm = torch.sigmoid(box_raw) # (B,4,g,g) in [0,1]
 
         return {"obj_logits": obj_logits, "box_norm": box_norm}
@@ -802,15 +897,28 @@ class ViTFaceDetectorRADAR(nn.Module):
         # We need to re-create image of original shape, so taking single CLS token doesn't work.
         all_tokens = sequence_output[:, 1:, :]  #(bs, seqlen, hidden_size)
         
-        # Reshape to (B, D, grid_h, grid_w) using runtime image size (keeps ONNX export dynamic).
-        B = all_tokens.shape[0]
-        D = all_tokens.shape[-1]
-        grid_h = pixel_values.shape[-2] // self.patch
-        grid_w = pixel_values.shape[-1] // self.patch
-        all_tokens = all_tokens.transpose(1, 2).reshape(B, D, grid_h, grid_w).contiguous()
+        x = all_tokens.transpose(1, 2).contiguous()  # (B, D, N)
 
-        obj_logits = self.obj_head(all_tokens)                          # (B,1,g,g)
-        box_raw = self.box_head(all_tokens)                             # (B,4,g,g)
+        # This logic avoids python integers/branches derived from tensor shapes
+        # grid reshape stays dyanmic for arbitrary height and width.
+        if torch.onnx.is_in_onnx_export():
+            import torch.onnx.operators as onnx_ops
+
+            pv_shape = onnx_ops.shape_as_tensor(pixel_values)
+            grid_h = torch.floor_divide(pv_shape[2], self.patch)
+            grid_w = torch.floor_divide(pv_shape[3], self.patch)
+            x_shape = onnx_ops.shape_as_tensor(x)
+            out_shape = torch.stack([x_shape[0], x_shape[1], grid_h, grid_w])
+            x = onnx_ops.reshape_from_tensor_shape(x, out_shape)
+        else:
+            B = x.shape[0]
+            D = x.shape[1]
+            grid_h = pixel_values.shape[-2] // self.patch
+            grid_w = pixel_values.shape[-1] // self.patch
+            x = x.reshape(B, D, grid_h, grid_w).contiguous()
+
+        obj_logits = self.obj_head(x)                          # (B,1,g,g)
+        box_raw = self.box_head(x)                             # (B,4,g,g)
         box_norm = torch.sigmoid(box_raw)                           # (B,4,g,g) in [0,1]
 
         return {"obj_logits": obj_logits, "box_norm": box_norm}

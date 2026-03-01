@@ -162,7 +162,7 @@ class Trainer:
         dummy = torch.zeros((1, 3, image_size, image_size), device=self.device, dtype=torch.float32)
 
         input_names = ["pixel_values"]
-        dynamic_axes = {"pixel_values": {0: "batch"}}
+        dynamic_axes = {"pixel_values": {0: "batch", 2: "height", 3: "width"}}
         opset_version = int(getattr(self.config.train_config, "onnx_opset", 17))
 
         if self.task == "facedet":
@@ -177,8 +177,8 @@ class Trainer:
 
             export_model = _FDExportWrapper(raw_model)
             output_names = ["obj_logits", "box_norm"]
-            dynamic_axes["obj_logits"] = {0: "batch"}
-            dynamic_axes["box_norm"] = {0: "batch"}
+            dynamic_axes["obj_logits"] = {0: "batch", 2: "grid_h", 3: "grid_w"}
+            dynamic_axes["box_norm"] = {0: "batch", 2: "grid_h", 3: "grid_w"}
         else:
             export_model = raw_model
             output_names = ["logits"]
