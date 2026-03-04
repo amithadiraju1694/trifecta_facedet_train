@@ -307,9 +307,13 @@ class CrowdHuman(torch.utils.data.Dataset):
         
         return img_t, boxes
 
-
 class FaceDetTrainAugmentDataset(Dataset):
-    """Train-time wrapper with optional Gaussian noise and 4-image mosaic."""
+    """Train-time wrapper with optional geometric/photo augmentations and 4-image mosaic.
+
+    Assumes base dataset returns:
+      - img: torch.Tensor in CHW float32 (already normalized)
+      - boxes: torch.Tensor in xyxy pixel coords aligned to that img tensor
+    """
 
     def __init__(
         self,
@@ -317,11 +321,15 @@ class FaceDetTrainAugmentDataset(Dataset):
         mosaic_prob: float = 0.0,
         gaussian_noise_prob: float = 0.0,
         gaussian_noise_std: float = 0.02,
+        hflip_prob: float = 0.5,
+        blur_prob: float = 0.1,
     ):
         self.base_ds = base_ds
         self.mosaic_prob = float(mosaic_prob)
         self.gaussian_noise_prob = float(gaussian_noise_prob)
         self.gaussian_noise_std = float(gaussian_noise_std)
+        self.hflip_prob = float(hflip_prob)
+        self.blur_prob = float(blur_prob)
 
     def __len__(self):
         return len(self.base_ds)
@@ -404,12 +412,41 @@ class FaceDetTrainAugmentDataset(Dataset):
         noisy = img + (torch.randn_like(img) * self.gaussian_noise_std)
         return noisy.clamp(-6.0, 6.0)
 
+    def _apply_hflip(self, img: torch.Tensor, boxes: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.hflip_prob <= 0.0 or random.random() >= self.hflip_prob:
+            return img, boxes
+
+        # img: (C,H,W) -> flip width
+        img = torch.flip(img, dims=[-1])
+
+        if boxes.numel() == 0:
+            return img, boxes
+
+        w = int(img.shape[-1])
+        boxes = boxes.clone()
+        x1 = boxes[:, 0].clone()
+        x2 = boxes[:, 2].clone()
+        boxes[:, 0] = float(w - 1) - x2
+        boxes[:, 2] = float(w - 1) - x1
+        boxes[:, 0::2] = boxes[:, 0::2].clamp(0, max(0, w - 1))
+        valid = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+        boxes = boxes[valid]
+        return img, boxes
+
+    def _apply_blur(self, img: torch.Tensor) -> torch.Tensor:
+        # Simple box blur (fast, works fine on normalized tensors).
+        if self.blur_prob <= 0.0 or random.random() >= self.blur_prob:
+            return img
+        return F.avg_pool2d(img.unsqueeze(0), kernel_size=3, stride=1, padding=1).squeeze(0)
+
     def __getitem__(self, idx: int):
         if self.mosaic_prob > 0.0 and random.random() < self.mosaic_prob:
             img, boxes = self._build_mosaic(idx)
         else:
             img, boxes = self.base_ds[idx]
 
+        img, boxes = self._apply_hflip(img, boxes)
+        img = self._apply_blur(img)
         img = self._apply_gaussian_noise(img)
         return img, boxes
 

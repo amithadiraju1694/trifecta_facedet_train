@@ -326,6 +326,8 @@ def build_widerface_ddp_loaders(
     gaussian_noise_prob: float = 0.0,
     gaussian_noise_std: float = 0.02,
     mosaic_prob: float = 0.0,
+    hflip_prob: float = 0.5,
+    blur_prob: float = 0.1,
 ):
     dist_init = dist.is_available() and dist.is_initialized()
     rank = dist.get_rank() if dist_init else 0
@@ -361,12 +363,14 @@ def build_widerface_ddp_loaders(
         )
         train_ds = ConcatDataset([wider_train_ds, crowd_train_ds])
 
-    if mosaic_prob > 0.0 or gaussian_noise_prob > 0.0:
+    if mosaic_prob > 0.0 or gaussian_noise_prob > 0.0 or hflip_prob > 0.0 or blur_prob > 0.0:
         train_ds = FaceDetTrainAugmentDataset(
             base_ds=train_ds,
             mosaic_prob=mosaic_prob,
             gaussian_noise_prob=gaussian_noise_prob,
             gaussian_noise_std=gaussian_noise_std,
+            hflip_prob=hflip_prob,
+            blur_prob=blur_prob,
         )
 
     train_sampler = None
@@ -444,6 +448,8 @@ def main(yaml_config_file: str, exp_name: str):
         gaussian_noise_prob = float(getattr(config.train_config, "gaussian_noise_prob", 0.0))
         gaussian_noise_std = float(getattr(config.train_config, "gaussian_noise_std", 0.02))
         mosaic_prob = float(getattr(config.train_config, "mosaic_prob", 0.0))
+        hflip_prob = float(getattr(config.train_config, "hflip_prob", 0.5))
+        blur_prob = float(getattr(config.train_config, "blur_prob", 0.1))
 
         train_dataloader, val_dataloader, test_dataloader = build_widerface_ddp_loaders(
             data_root=data_root,
@@ -457,6 +463,8 @@ def main(yaml_config_file: str, exp_name: str):
             gaussian_noise_prob=gaussian_noise_prob,
             gaussian_noise_std=gaussian_noise_std,
             mosaic_prob=mosaic_prob,
+            hflip_prob=hflip_prob,
+            blur_prob=blur_prob,
         )
     
     # Given that classification is removed from this repo , entire else condition may be redundant 
