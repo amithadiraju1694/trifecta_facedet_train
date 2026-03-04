@@ -44,6 +44,16 @@ class _TimmEmbeddingsShim:
         self.dropout = backbone.pos_drop
         self._last_position_embeddings = backbone.pos_embed
 
+        # Positional embeddings are parameters with a static token grid. Pre-compute
+        # the source grid here (outside tracing) to avoid TracerWarnings during ONNX export.
+        pos_embed = backbone.pos_embed  # (1, 1+N, D)
+        patch_pos = pos_embed[:, 1:, :]
+        src_tokens = int(patch_pos.shape[1])
+        src_grid = int(src_tokens ** 0.5)
+        if src_grid * src_grid != src_tokens:
+            raise ValueError(f"Unexpected non-square positional grid with {src_tokens} tokens")
+        self._pos_src_grid = src_grid
+
     class _OnnxResizeBicubic2d(torch.autograd.Function):
         @staticmethod
         def forward(
@@ -57,8 +67,8 @@ class _TimmEmbeddingsShim:
             # shape without converting shape tensors to Python ints (avoids TracerWarning).
             #
             # Use ceil division to match timm PatchEmbed dynamic padding behavior when enabled.
-            out_h = (int(pixel_values.shape[2]) + int(patch_h) - 1) // int(patch_h)
-            out_w = (int(pixel_values.shape[3]) + int(patch_w) - 1) // int(patch_w)
+            out_h = (pixel_values.shape[2] + patch_h - 1) // patch_h
+            out_w = (pixel_values.shape[3] + patch_w - 1) // patch_w
             return F.interpolate(x, size=(out_h, out_w), mode="bicubic", align_corners=False)
 
         @staticmethod
@@ -119,10 +129,7 @@ class _TimmEmbeddingsShim:
         cls_pos = pos_embed[:, :1, :]
         patch_pos = pos_embed[:, 1:, :]
 
-        src_tokens = patch_pos.shape[1]
-        src_grid = int(src_tokens ** 0.5)
-        if src_grid * src_grid != src_tokens:
-            raise ValueError(f"Unexpected non-square positional grid with {src_tokens} tokens")
+        src_grid = self._pos_src_grid
 
         patch_pos_2d = patch_pos.reshape(1, src_grid, src_grid, -1).permute(0, 3, 1, 2)
         patch_pos_2d = F.interpolate(
@@ -148,10 +155,7 @@ class _TimmEmbeddingsShim:
         cls_pos = pos_embed[:, :1, :]
         patch_pos = pos_embed[:, 1:, :]
 
-        src_tokens = patch_pos.shape[1]
-        src_grid = int(src_tokens ** 0.5)
-        if src_grid * src_grid != src_tokens:
-            raise ValueError(f"Unexpected non-square positional grid with {src_tokens} tokens")
+        src_grid = self._pos_src_grid
 
         patch_pos_2d = patch_pos.reshape(1, src_grid, src_grid, -1).permute(0, 3, 1, 2)
         patch_pos_2d = self._OnnxResizeBicubic2d.apply(patch_pos_2d, pixel_values, patch_h, patch_w)
